@@ -18,8 +18,6 @@ sleep 3
 # TODO: Use webhooks
 kubectl delete validatingwebhookconfigurations pvc-autoscaler-validating-webhook-configuration
 kubectl delete mutatingwebhookconfigurations pvc-autoscaler-mutating-webhook-configuration
-# Manually patch storage class to allow volume expansion
-kubectl patch storageclass standard -p '{"allowVolumeExpansion": true}'
 # Apply example PVC Autoscaler
 kubectl apply -f example-pvca.yaml
 # Label namespace for network policies to work
