@@ -27,3 +27,28 @@ kubectl label namespace pvc-autoscaler-system gardener.cloud/role=shoot
 # Create fake metrics
 kubectl apply -f fake-metrics/minimal-fake-metrics.yaml
 
+# Wait for PVC autoscaler to process and resize the PVC
+echo "Waiting for PVC autoscaler to resize vali-vali-0 PVC..."
+sleep 120
+
+# Check that vali-vali-0 PVC in garden namespace has been resized to 110Gi
+echo "Checking PVC capacity..."
+ACTUAL_CAPACITY=$(kubectl get pvc vali-vali-0 -n garden -o jsonpath='{.spec.resources.requests.storage}')
+EXPECTED_CAPACITY="110Gi"
+
+echo "Expected capacity: ${EXPECTED_CAPACITY}"
+echo "Actual capacity: ${ACTUAL_CAPACITY}"
+
+if [ "${ACTUAL_CAPACITY}" = "${EXPECTED_CAPACITY}" ]; then
+    echo "✅ SUCCESS: PVC vali-vali-0 has been resized to ${EXPECTED_CAPACITY}"
+    kubectl -n garden get pvc vali-vali-0 -o yaml
+    exit 0
+else
+    echo "❌ FAILURE: Expected ${EXPECTED_CAPACITY}, but got ${ACTUAL_CAPACITY}"
+    echo "PVC Status:"
+    kubectl get pvc vali-vali-0 -n garden -o yaml
+    echo "PVCA Status:"
+    kubectl get pvca -n garden -o yaml
+    exit 1
+fi
+
