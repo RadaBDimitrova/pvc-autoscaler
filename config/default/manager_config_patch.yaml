@@ -6,12 +6,19 @@ metadata:
   namespace: system
 spec:
   template:
+    metadata:
+      labels:
+        networking.resources.gardener.cloud/to-garden-prometheus-cache-tcp-9090: allowed
     spec:
       containers:
       - name: manager
+        env:
+        - name: ENABLE_WEBHOOKS
+          value: "false"
+        imagePullPolicy: Never
         args:
         - "--health-probe-bind-address=:8081"
         - "--metrics-bind-address=127.0.0.1:8080"
         - "--leader-elect"
         - "--interval=30s"
-        - "--prometheus-address=http://prometheus-k8s.monitoring.svc.cluster.local:9090"
+        - "--prometheus-address=http://10.2.44.22:80"

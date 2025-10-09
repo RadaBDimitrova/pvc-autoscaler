@@ -204,6 +204,8 @@ func (p *Prometheus) getMetric(ctx context.Context, query string, metrics metric
 		logger.Info(warning, "query", query)
 	}
 
+	logger.Info("queried prometheus", "query", query, "result", result)
+
 	vector, ok := result.(model.Vector)
 	if !ok {
 		return fmt.Errorf("expected model.Vector result, got %s", result.Type())

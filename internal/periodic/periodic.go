@@ -333,7 +333,7 @@ func (r *Runner) shouldReconcilePVC(ctx context.Context, pvca *v1alpha1.Persiste
 			delta = -delta
 		}
 		if delta > common.ScalingResolutionBytes/2 {
-			return false, common.ErrStaleMetrics
+			return false, fmt.Errorf("stale metrics data, metrics got %d bytes, but PVC status is %d bytes: %w", volInfo.CapacityBytes, statusSize, common.ErrStaleMetrics)
 		}
 	}
 
@@ -342,13 +342,13 @@ func (r *Runner) shouldReconcilePVC(ctx context.Context, pvca *v1alpha1.Persiste
 	// didn't get any metrics for it.
 	freeSpace, err := volInfo.FreeSpacePercentage()
 	if err != nil {
-		return false, common.ErrNoMetrics
+		return false, fmt.Errorf("(no metrics found) cannot get free space percentage: %w", err)
 	}
 
 	// Even, if we don't have inode metrics we still want to proceed here.
 	freeInodes, err := volInfo.FreeInodesPercentage()
 	if err != nil {
-		return false, common.ErrNoMetrics
+		return false, fmt.Errorf("(no metrics found) cannot get free inodes percentage: %w", err)
 	}
 
 	threshold, err := utils.ParsePercentage(pvca.Spec.Threshold)

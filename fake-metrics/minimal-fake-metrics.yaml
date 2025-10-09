@@ -1,0 +1,135 @@
+# Minimal nginx-based fake metrics server for testing PVC autoscaler
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minimal-fake-metrics-config
+  namespace: garden
+data:
+  nginx.conf: |
+
+    events {
+        worker_connections 1024;
+    }
+    
+
+    http {
+        server {
+            listen 8080;
+            
+            # Serve static fake Prometheus metrics
+            location /metrics {
+                add_header Content-Type text/plain;
+                return 200 "# HELP kubelet_volume_stats_available_bytes Fake available bytes in volumes\n# TYPE kubelet_volume_stats_available_bytes gauge\nkubelet_volume_stats_available_bytes{namespace=\"garden\",persistentvolumeclaim=\"vali-vali-0\",type=\"fake\"} 1073741824\nkubelet_volume_stats_available_bytes{namespace=\"default\",persistentvolumeclaim=\"test-pvc-2\",type=\"fake\"} 4294967296\n\n# HELP kubelet_volume_stats_capacity_bytes Fake capacity bytes of volumes\n# TYPE kubelet_volume_stats_capacity_bytes gauge\nkubelet_volume_stats_capacity_bytes{namespace=\"garden\",persistentvolumeclaim=\"vali-vali-0\",type=\"fake\"} 107374182400\nkubelet_volume_stats_capacity_bytes{namespace=\"default\",persistentvolumeclaim=\"test-pvc-2\",type=\"fake\"} 53687091200\n\n# HELP kubelet_volume_stats_inodes_free Fake free inodes in volumes\n# TYPE kubelet_volume_stats_inodes_free gauge\nkubelet_volume_stats_inodes_free{namespace=\"garden\",persistentvolumeclaim=\"vali-vali-0\",type=\"fake\"} 65536\nkubelet_volume_stats_inodes_free{namespace=\"default\",persistentvolumeclaim=\"test-pvc-2\",type=\"fake\"} 262144\n\n# HELP kubelet_volume_stats_inodes Fake total inodes in volumes\n# TYPE kubelet_volume_stats_inodes gauge\nkubelet_volume_stats_inodes{namespace=\"garden\",persistentvolumeclaim=\"vali-vali-0\",type=\"fake\"} 655360\nkubelet_volume_stats_inodes{namespace=\"default\",persistentvolumeclaim=\"test-pvc-2\",type=\"fake\"} 327680\n";
+            }
+            
+            # Health check endpoint
+            location /health {
+                add_header Content-Type text/plain;
+                return 200 'OK';
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minimal-fake-metrics-server
+  namespace: garden
+  labels:
+    app: minimal-fake-metrics-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minimal-fake-metrics-server
+  template:
+    metadata:
+      labels:
+        app: minimal-fake-metrics-server
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 8080
+          name: metrics
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: config
+        configMap:
+          name: minimal-fake-metrics-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minimal-fake-metrics-server
+  namespace: garden
+  annotations:
+    networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports: '[{"protocol":"TCP","port":8080}]'
+  labels:
+    app: minimal-fake-metrics-server
+spec:
+  selector:
+    app: minimal-fake-metrics-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: metrics
+  type: ClusterIP
+
+---
+# ServiceMonitor for minimal fake nginx metrics server
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: minimal-fake-metrics-server
+  namespace: garden
+  labels:
+    prometheus: cache
+    app: minimal-fake-metrics-server
+spec:
+  selector:
+    matchLabels:
+      app: minimal-fake-metrics-server
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 30s
+    honorLabels: false
+    metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: kubelet_volume_stats_.*
+      action: keep
+    - sourceLabels: [type]
+      regex: fake
+      action: keep
+    relabelings:
+    - targetLabel: instance
+      replacement: fake-metrics-server
+    - targetLabel: job
+      replacement: fake-kubelet-metrics

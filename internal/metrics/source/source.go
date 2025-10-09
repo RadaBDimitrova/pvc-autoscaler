@@ -14,11 +14,11 @@ import (
 const (
 	// KubeletVolumeStatsAvailableBytes is a metric which returns
 	// the available bytes in the volumes
-	KubeletVolumeStatsAvailableBytes = "kubelet_volume_stats_available_bytes"
+	KubeletVolumeStatsAvailableBytes = "kubelet_volume_stats_available_bytes{type=\"fake\"}"
 
 	// KubeletVolumeStatsCapacityBytes is a metric which returns the
 	// capacity in bytes of the volumes
-	KubeletVolumeStatsCapacityBytes = "kubelet_volume_stats_capacity_bytes"
+	KubeletVolumeStatsCapacityBytes = "kubelet_volume_stats_capacity_bytes{type=\"fake\"}"
 
 	// KubeletVolumeStatusInodesFree is a metric which returns the number of
 	// free inodes in the volumes
