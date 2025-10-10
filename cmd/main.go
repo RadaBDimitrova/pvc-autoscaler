@@ -19,6 +19,7 @@ import (
 	v1alpha1 "github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
 	"github.com/gardener/pvc-autoscaler/internal/common"
 	controller "github.com/gardener/pvc-autoscaler/internal/controller/autoscaling"
+	"github.com/gardener/pvc-autoscaler/internal/controller/pva"
 	"github.com/gardener/pvc-autoscaler/internal/metrics/source/prometheus"
 	"github.com/gardener/pvc-autoscaler/internal/periodic"
 
@@ -138,7 +139,7 @@ func main() {
 	prometheusOpts := []prometheus.Option{
 		prometheus.WithAddress(prometheusAddress),
 	}
-	
+
 	// Add configurable metric queries if provided
 	if metricsAvailableBytesQuery != "" {
 		prometheusOpts = append(prometheusOpts, prometheus.WithAvailableBytesQuery(metricsAvailableBytesQuery))
@@ -152,7 +153,7 @@ func main() {
 	if metricsCapacityInodesQuery != "" {
 		prometheusOpts = append(prometheusOpts, prometheus.WithCapacityInodesQuery(metricsCapacityInodesQuery))
 	}
-	
+
 	metricsSource, err := prometheus.New(prometheusOpts...)
 	if err != nil {
 		setupLog.Error(err, "unable to create metrics source", "controller", common.ControllerName)
@@ -192,6 +193,15 @@ func main() {
 
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", common.ControllerName)
+		os.Exit(1)
+	}
+
+	// Set up PVA controller
+	if err = (&pva.PersistentVolumeAutoscalerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create PVA controller")
 		os.Exit(1)
 	}
 
