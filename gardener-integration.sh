@@ -18,7 +18,8 @@ sleep 3
 # TODO: Use webhooks
 kubectl delete validatingwebhookconfigurations pvc-autoscaler-validating-webhook-configuration
 kubectl delete mutatingwebhookconfigurations pvc-autoscaler-mutating-webhook-configuration
-# Apply example PVC Autoscaler
-kubectl apply -f example-pvca.yaml
+# Apply example PersistentVolumeAutoscaler (PVA)
+kubectl apply -f config/crd/bases/autoscaling.gardener.cloud_persistentvolumeautoscalers.yaml 
+kubectl apply -f example-pva.yaml
 # Label namespace for network policies to work
 kubectl label namespace pvc-autoscaler-system gardener.cloud/role=shoot
