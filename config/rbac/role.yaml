@@ -28,8 +28,28 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - autoscaling.gardener.cloud
   resources:
+  - persistentvolumeautoscalers
   - persistentvolumeclaimautoscalers
   verbs:
   - create
@@ -42,12 +62,14 @@ rules:
 - apiGroups:
   - autoscaling.gardener.cloud
   resources:
+  - persistentvolumeautoscalers/finalizers
   - persistentvolumeclaimautoscalers/finalizers
   verbs:
   - update
 - apiGroups:
   - autoscaling.gardener.cloud
   resources:
+  - persistentvolumeautoscalers/status
   - persistentvolumeclaimautoscalers/status
   verbs:
   - get
