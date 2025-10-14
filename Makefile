@@ -34,6 +34,8 @@ CONTAINER_TOOL ?= docker
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+DEV_SETUP_WITH_LPP_RESIZE_SUPPORT ?= false
+
 .PHONY: all
 all: build
 
@@ -90,6 +92,20 @@ lint: golangci-lint  ## Run golangci-lint linter & yamllint
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
+
+.PHONY: kind-up
+kind-up: 
+	kind create cluster --name pvc-autoscaler
+
+.PHONY: kind-down
+kind-up: 
+	kind delete cluster --name pvc-autoscaler
+
+.PHONY: pvc-autoscaler-up
+pvc-autoscaler-up:
+	$(SKAFFOLD) run
+	./hack/pvc-autoscaler-up.sh \
+	--with-lpp-resize-support $(DEV_SETUP_WITH_LPP_RESIZE_SUPPORT) \
 
 .PHONY: minikube-start
 minikube-start: minikube yq  ## Start a local dev environment

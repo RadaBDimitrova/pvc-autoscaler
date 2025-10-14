@@ -4,7 +4,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: vali-vali-0
-  namespace: monitoring
+  namespace: pvc-autoscaler-system
 spec:
   accessModes:
     - ReadWriteOnce
@@ -19,7 +19,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: dummy-pod
-  namespace: monitoring
+  namespace: pvc-autoscaler-system
   labels:
     app: dummy-app
 spec:
@@ -51,7 +51,7 @@ apiVersion: autoscaling.gardener.cloud/v1alpha1
 kind: PersistentVolumeClaimAutoscaler
 metadata:
   name: dummy-storage-pvca
-  namespace: monitoring
+  namespace: pvc-autoscaler-system
   labels:
     app: dummy-app
     pvc: dummy-storage

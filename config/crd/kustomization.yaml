@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/autoscaling.gardener.cloud_persistentvolumeclaimautoscalers.yaml
+- bases/autoscaling.gardener.cloud_persistentvolumeautoscalers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
