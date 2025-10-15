@@ -103,7 +103,6 @@ kind-down:
 
 .PHONY: pvc-autoscaler-up
 pvc-autoscaler-up:
-	skaffold run
 	./hack/pvc-autoscaler-up.sh \
 	--with-lpp-resize-support $(DEV_SETUP_WITH_LPP_RESIZE_SUPPORT) \
 

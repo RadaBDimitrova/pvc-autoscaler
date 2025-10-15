@@ -1,3 +1,9 @@
+configMapGenerator:
+- name: minimal-fake-metrics-config
+  files:
+  - nginx.conf
+  - metrics.txt
+
 resources:
-- monitor.yaml
 - fake.yaml
+- monitor.yaml

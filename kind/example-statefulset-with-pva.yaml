@@ -1,0 +1,55 @@
+apiVersion: autoscaling.gardener.cloud/v1alpha1
+kind: PersistentVolumeAutoscaler
+metadata:
+  name: test-pvca-1
+  namespace: pvc-autoscaler-system
+spec:
+  increaseBy: "10%"
+  threshold: "0.5%"
+  maxCapacity: "40Gi"
+  targetRef:
+    kind: StatefulSet
+    apiVersion: apps/v1
+    name: test-sts
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: test-sts
+  namespace: pvc-autoscaler-system
+  labels:
+    app: test-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: vali-vali-0
+          mountPath: /usr/share/nginx/html
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  volumeClaimTemplates:
+  - metadata:
+      name: vali-vali-0
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 1Gi
