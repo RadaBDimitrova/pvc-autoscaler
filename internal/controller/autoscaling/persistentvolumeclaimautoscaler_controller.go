@@ -138,6 +138,11 @@ func (r *PersistentVolumeClaimAutoscalerReconciler) Reconcile(ctx context.Contex
 	currSpecSize := pvcObj.Spec.Resources.Requests.Storage()
 	currStatusSize := pvcObj.Status.Capacity.Storage()
 
+	if value, ok := pvca.Annotations["expectedGeneration"]; ok && value != fmt.Sprintf("%v", pvca.Generation) {
+		logger.Info("expectedGeneration is different from actual generation, skipping")
+		return ctrl.Result{}, nil
+	}
+
 	// Make sure that the PVC is not being modified at the moment.  Note,
 	// that we are not treating the following status conditions as errors,
 	// as these are transient conditions.

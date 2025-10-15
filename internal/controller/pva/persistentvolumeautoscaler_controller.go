@@ -195,7 +195,7 @@ func (r *PersistentVolumeAutoscalerReconciler) ensurePVCAForPVC(ctx context.Cont
 			},
 		},
 	}
-
+	time.Sleep(45 * time.Second)
 	// Check if PVCA already exists
 	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: pva.Namespace,
@@ -203,16 +203,27 @@ func (r *PersistentVolumeAutoscalerReconciler) ensurePVCAForPVC(ctx context.Cont
 	}, pvca); err != nil {
 		if errors.IsNotFound(err) {
 			// Create new PVCA
+			desired.Annotations = map[string]string{
+				"expectedGeneration": "1",
+			}
 			return r.Create(ctx, desired)
 		}
-		return err
+		return fmt.Errorf("other error: %v", err)
+	}
+
+	desired.Annotations = map[string]string{
+		"expectedGeneration": fmt.Sprintf("%v", pvca.Generation+1),
 	}
 
 	// Update existing PVCA if needed
 	if needsPVCAUpdate(pvca, desired) {
 		pvca.Spec = desired.Spec
 		pvca.Labels = desired.Labels
-		return r.Update(ctx, pvca)
+		pvca.Annotations = desired.Annotations
+		if err := r.Update(ctx, pvca); err != nil {
+			return fmt.Errorf("failed to update: %v", err)
+		}
+		return nil
 	}
 
 	return nil

@@ -1,12 +1,12 @@
 apiVersion: autoscaling.gardener.cloud/v1alpha1
 kind: PersistentVolumeAutoscaler
 metadata:
-  name: test-pvca-1
+  name: test-pva
   namespace: pvc-autoscaler-system
 spec:
   increaseBy: "10%"
   threshold: "0.5%"
-  maxCapacity: "40Gi"
+  maxCapacity: "200Gi"
   targetRef:
     kind: StatefulSet
     apiVersion: apps/v1
@@ -20,7 +20,7 @@ metadata:
   labels:
     app: test-app
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: test-app
@@ -52,4 +52,4 @@ spec:
       storageClassName: standard
       resources:
         requests:
-          storage: 1Gi
+          storage: 100Gi
