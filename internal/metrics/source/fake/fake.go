@@ -93,6 +93,17 @@ func New(opts ...Option) *Fake {
 	return f
 }
 
+// WithKAPI configures the [Fake] metrics source to simulate KAPI behavior.
+// This option can be used to differentiate source types in tests.
+func WithKAPI() Option {
+	return func(f *Fake) {
+		// Currently, KAPI and regular fake sources behave identically
+		// This option exists for semantic clarity in tests and future extensibility
+
+		// Future enhancement: could set f.sourceType = "kapi" if needed
+	}
+}
+
 // WithInterval configures the [Fake] metrics source to "consume" space and
 // inodes on every interval.
 func WithInterval(i time.Duration) Option {

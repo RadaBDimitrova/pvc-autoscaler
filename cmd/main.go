@@ -20,6 +20,8 @@ import (
 	"github.com/gardener/pvc-autoscaler/internal/common"
 	controller "github.com/gardener/pvc-autoscaler/internal/controller/autoscaling"
 	"github.com/gardener/pvc-autoscaler/internal/controller/pva"
+	metricssource "github.com/gardener/pvc-autoscaler/internal/metrics/source"
+	"github.com/gardener/pvc-autoscaler/internal/metrics/source/kapi"
 	"github.com/gardener/pvc-autoscaler/internal/metrics/source/prometheus"
 	"github.com/gardener/pvc-autoscaler/internal/periodic"
 
@@ -160,12 +162,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	kapiMetricsSource, err := kapi.New(
+		kapi.WithClient(mgr.GetClient()),
+		kapi.WithHTTPClient(mgr.GetHTTPClient()),
+		kapi.WithAPIHost(mgr.GetConfig().Host),
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to create kapi metrics source", "controller", common.ControllerName)
+		os.Exit(1)
+	}
+
+	metricsSources := []metricssource.Source{
+		metricsSource,
+		kapiMetricsSource,
+	}
+
 	// Add the periodic runner
 	runner, err := periodic.New(
 		periodic.WithClient(mgr.GetClient()),
 		periodic.WithInterval(interval),
 		periodic.WithEventChannel(eventCh),
-		periodic.WithMetricsSource(metricsSource),
+		periodic.WithMetricsSource(metricsSources),
 		periodic.WithEventRecorder(mgr.GetEventRecorderFor(common.ControllerName)),
 	)
 

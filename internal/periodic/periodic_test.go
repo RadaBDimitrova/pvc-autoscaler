@@ -37,12 +37,20 @@ func newRunner() (*Runner, error) {
 		fake.WithInterval(time.Second),
 	)
 
+	kapiMetricsSource := fake.New(
+		fake.WithInterval(time.Second),
+		fake.WithKAPI(),
+	)
+
+	// Use array of metrics sources
+	metricsSources := []metricssource.Source{metricsSource, kapiMetricsSource}
+
 	runner, err := New(
 		WithClient(k8sClient),
 		WithEventChannel(eventCh),
 		WithEventRecorder(eventRecorder),
 		WithInterval(time.Second),
-		WithMetricsSource(metricsSource),
+		WithMetricsSource(metricsSources),
 	)
 
 	return runner, err
@@ -74,7 +82,7 @@ var _ = Describe("Periodic Runner", func() {
 				WithEventChannel(nil), // should not be nil
 				WithEventRecorder(eventRecorder),
 				WithInterval(time.Second),
-				WithMetricsSource(fake.New()),
+				WithMetricsSource([]metricssource.Source{fake.New()}),
 			)
 			Expect(err).To(MatchError(common.ErrNoEventChannel))
 			Expect(runner).To(BeNil())
@@ -86,7 +94,7 @@ var _ = Describe("Periodic Runner", func() {
 				WithEventChannel(eventCh),
 				WithEventRecorder(eventRecorder),
 				WithInterval(time.Second),
-				WithMetricsSource(fake.New()),
+				WithMetricsSource([]metricssource.Source{fake.New()}),
 			)
 			Expect(err).To(MatchError(ErrNoClient))
 			Expect(runner).To(BeNil())
@@ -98,7 +106,7 @@ var _ = Describe("Periodic Runner", func() {
 				WithEventChannel(eventCh),
 				WithEventRecorder(nil), // should not be nil
 				WithInterval(time.Second),
-				WithMetricsSource(fake.New()),
+				WithMetricsSource([]metricssource.Source{fake.New()}),
 			)
 			Expect(err).To(MatchError(common.ErrNoEventRecorder))
 			Expect(runner).To(BeNil())
@@ -627,7 +635,7 @@ var _ = Describe("Periodic Runner", func() {
 			// the metrics source.
 			eventCh := make(chan event.GenericEvent, 128)
 			withEventChOpt := WithEventChannel(eventCh)
-			withMetricsSourceOpt := WithMetricsSource(metricsSource)
+			withMetricsSourceOpt := WithMetricsSource([]metricssource.Source{metricsSource})
 			withEventChOpt(runner)
 			withMetricsSourceOpt(runner)
 
@@ -666,7 +674,7 @@ var _ = Describe("Periodic Runner", func() {
 
 			// Reconfigure the periodic runner to use an always failing metrics source
 			metricsSource := &fake.AlwaysFailing{}
-			withMetricsSourceOpt := WithMetricsSource(metricsSource)
+			withMetricsSourceOpt := WithMetricsSource([]metricssource.Source{metricsSource})
 			withMetricsSourceOpt(runner)
 
 			// We should not see any events for this PVC, since the
@@ -721,7 +729,7 @@ var _ = Describe("Periodic Runner", func() {
 			// the metrics source.
 			eventCh := make(chan event.GenericEvent, 128)
 			withEventChOpt := WithEventChannel(eventCh)
-			withMetricsSourceOpt := WithMetricsSource(metricsSource)
+			withMetricsSourceOpt := WithMetricsSource([]metricssource.Source{metricsSource})
 			withEventChOpt(runner)
 			withMetricsSourceOpt(runner)
 
@@ -762,7 +770,7 @@ var _ = Describe("Periodic Runner", func() {
 			// Reconfigure the periodic runner to use our always
 			// failing metrics source. Also, change the schedule to
 			// run more frequently.
-			withMetricsSourceOpt := WithMetricsSource(&fake.AlwaysFailing{})
+			withMetricsSourceOpt := WithMetricsSource([]metricssource.Source{&fake.AlwaysFailing{}})
 			withMetricsSourceOpt(runner)
 			withIntervalOpt := WithInterval(100 * time.Millisecond)
 			withIntervalOpt(runner)

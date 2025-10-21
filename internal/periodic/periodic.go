@@ -56,11 +56,11 @@ var ErrNoClient = errors.New("no client provided")
 // enqueues [v1alpha1.PersistentVolumeClaimAutoscaler] items for reconciling on
 // regular basis.
 type Runner struct {
-	client        client.Client
-	interval      time.Duration
-	eventCh       chan event.GenericEvent
-	metricsSource metricssource.Source
-	eventRecorder record.EventRecorder
+	client         client.Client
+	interval       time.Duration
+	eventCh        chan event.GenericEvent
+	metricsSources []metricssource.Source
+	eventRecorder  record.EventRecorder
 }
 
 var _ manager.Runnable = &Runner{}
@@ -75,7 +75,7 @@ func New(opts ...Option) (*Runner, error) {
 		opt(r)
 	}
 
-	if r.metricsSource == nil {
+	if r.metricsSources == nil {
 		return nil, ErrNoMetricsSource
 	}
 
@@ -123,9 +123,9 @@ func WithEventChannel(ch chan event.GenericEvent) Option {
 }
 
 // WithMetricsSource configures the [Runner] to use the given source of metrics.
-func WithMetricsSource(src metricssource.Source) Option {
+func WithMetricsSource(srcs []metricssource.Source) Option {
 	opt := func(r *Runner) {
-		r.metricsSource = src
+		r.metricsSources = srcs
 	}
 
 	return opt
@@ -173,9 +173,22 @@ func (r *Runner) enqueueObjects(ctx context.Context) error {
 		return nil
 	}
 
-	metricsData, err := r.metricsSource.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get metrics: %w", err)
+	// Go through all available sources in case you can't get from the first
+	var metricsData metricssource.Metrics
+	var lastErr error
+	logger := log.FromContext(ctx).WithName("periodic-runner")
+	for _, source := range r.metricsSources {
+		logger.V(1).Info("trying metrics source", "sourceType", fmt.Sprintf("%T", source))
+		metricsData, lastErr = source.Get(ctx)
+		if lastErr == nil {
+			logger.Info("successfully retrieved metrics from source",
+				"sourceType", fmt.Sprintf("%T", source),
+				"pvcCount", len(metricsData))
+			break
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("failed to get metrics: %w", lastErr)
 	}
 
 	toReconcile := make([]v1alpha1.PersistentVolumeClaimAutoscaler, 0)
@@ -189,6 +202,7 @@ func (r *Runner) enqueueObjects(ctx context.Context) error {
 			"name", item.Name,
 			"pvc", item.Spec.ScaleTargetRef.Name,
 		)
+		logger.Info("logging volInfo :)", "volInfo", volInfo)
 
 		ok, err := r.shouldReconcilePVC(ctx, &item, volInfo)
 		if err != nil {
