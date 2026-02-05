@@ -12,9 +12,31 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// ConditionTypeHealthy represents the type of the condition to represent
-// healthy state for the PVC Autoscaler.
-const ConditionTypeHealthy = "Healthy"
+// Condition types
+const (
+	// ConditionTypeRecommendationAvailable represents the type of condition
+	// indicating whether metrics have been successfully fetched and computed.
+	ConditionTypeRecommendationAvailable = "RecommendationAvailable"
+
+	// ConditionTypeResizing represents the type of condition indicating the
+	// status of the resize operation.
+	ConditionTypeResizing = "Resizing"
+)
+
+// Condition reasons
+const (
+	// ReasonMetricsFetched indicates that metrics were successfully fetched and computed.
+	ReasonMetricsFetched = "MetricsFetched"
+
+	// ReasonReconcile indicates that a reconcile is in progress.
+	ReasonReconcile = "Reconcile"
+
+	// ReasonStaleMetrics indicates that stale metrics were detected.
+	ReasonStaleMetrics = "StaleMetrics"
+
+	// ReasonMetricsFetchError indicates an error occurred while fetching metrics.
+	ReasonMetricsFetchError = "MetricsFetchError"
+)
 
 // ErrBadPercentageValue is an error which is returned when attempting to parse
 // a bad percentage value.
