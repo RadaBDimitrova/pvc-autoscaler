@@ -105,6 +105,16 @@ func (obj *PersistentVolumeClaimAutoscaler) SetCondition(ctx context.Context, kl
 	return klient.Status().Patch(ctx, obj, patch)
 }
 
+// RemoveCondition removes the condition with the given type from the object.
+func (obj *PersistentVolumeClaimAutoscaler) RemoveCondition(ctx context.Context, klient client.Client, conditionType string) error {
+	patch := client.MergeFrom(obj.DeepCopy())
+	conditions := obj.Status.Conditions
+	meta.RemoveStatusCondition(&conditions, conditionType)
+	obj.Status.Conditions = conditions
+
+	return klient.Status().Patch(ctx, obj, patch)
+}
+
 // +kubebuilder:object:root=true
 
 // PersistentVolumeClaimAutoscalerList contains a list of PersistentVolumeClaimAutoscaler

@@ -153,6 +153,10 @@ func (r *PersistentVolumeClaimAutoscalerReconciler) Reconcile(ctx context.Contex
 		}
 	}
 
+	if overallStatus == metav1.ConditionTrue {
+		return ctrl.Result{}, pvca.RemoveCondition(ctx, r.client, utils.ConditionTypeResizing)
+	}
+
 	condition := metav1.Condition{
 		Type:    utils.ConditionTypeResizing,
 		Status:  overallStatus,
