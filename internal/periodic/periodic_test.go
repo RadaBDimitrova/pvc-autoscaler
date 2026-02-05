@@ -209,7 +209,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(runner).NotTo(BeNil())
 
 			// No metrics at all
-			ok, err := runner.shouldReconcilePVC(parentCtx, obj, nil)
+			ok, err := runner.shouldReconcilePVC(parentCtx, obj, obj.Spec.TargetRef.Name, nil)
 			Expect(ok).To(BeFalse())
 			Expect(err).NotTo(BeNil())
 		})
@@ -240,7 +240,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(runner).NotTo(BeNil())
 
 			// No metrics at all
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, nil)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, nil)
 			Expect(ok).To(BeFalse())
 			Expect(err).To(MatchError(common.ErrNoMetrics))
 		})
@@ -294,7 +294,7 @@ var _ = Describe("Periodic Runner", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, &metricssource.VolumeInfo{})
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, &metricssource.VolumeInfo{})
 			Expect(ok).To(BeFalse())
 			Expect(err).To(MatchError(ErrStorageClassNotFound))
 		})
@@ -361,7 +361,7 @@ var _ = Describe("Periodic Runner", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, &metricssource.VolumeInfo{})
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, &metricssource.VolumeInfo{})
 			Expect(ok).To(BeFalse())
 			Expect(err).To(MatchError(ErrStorageClassDoesNotSupportExpansion))
 		})
@@ -423,7 +423,7 @@ var _ = Describe("Periodic Runner", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeFalse())
 			Expect(err).To(MatchError(ErrVolumeModeIsNotFilesystem))
 		})
@@ -471,7 +471,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
 
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeFalse())
 			Expect(err).To(BeNil())
 		})
@@ -515,7 +515,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(runner).NotTo(BeNil())
 			withEventRecorderOpt(runner)
 
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeTrue())
 			Expect(err).To(BeNil())
 
@@ -558,7 +558,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
 
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeFalse())
 			Expect(err).To(MatchError(common.ErrStaleMetrics))
 		})
@@ -602,7 +602,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(runner).NotTo(BeNil())
 			withEventRecorderOpt(runner)
 
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeTrue())
 			Expect(err).To(BeNil())
 
@@ -645,7 +645,7 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
 
-			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, volInfo)
+			ok, err := runner.shouldReconcilePVC(parentCtx, pvca, pvca.Spec.TargetRef.Name, volInfo)
 			Expect(ok).To(BeFalse())
 			Expect(err).To(BeNil())
 		})

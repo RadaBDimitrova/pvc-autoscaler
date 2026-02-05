@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -178,58 +179,98 @@ func (r *Runner) enqueueObjects(ctx context.Context) error {
 		return fmt.Errorf("failed to get metrics: %w", err)
 	}
 
-	toReconcile := make([]v1alpha1.PersistentVolumeClaimAutoscaler, 0)
 	for _, item := range items.Items {
-		pvcObjKey := client.ObjectKey{Namespace: item.Namespace, Name: item.Spec.TargetRef.Name}
-		volInfo := metricsData[pvcObjKey]
-		logger := log.FromContext(
-			ctx,
-			"controller", common.ControllerName,
-			"namespace", item.Namespace,
-			"name", item.Name,
-			"pvc", item.Spec.TargetRef.Name,
-		)
-
-		ok, err := r.shouldReconcilePVC(ctx, &item, volInfo)
+		needsReconcile, err := r.processPVCA(ctx, &item, metricsData)
 		if err != nil {
-			logger.Info("skipping persistentvolumeclaim", "reason", err.Error())
-			metrics.SkippedTotal.WithLabelValues(item.Namespace, item.Name, err.Error()).Inc()
-			condition := metav1.Condition{
-				Type:    utils.ConditionTypeHealthy,
-				Status:  metav1.ConditionUnknown,
-				Reason:  "Reconciling",
-				Message: err.Error(),
-			}
-			if err := item.SetCondition(ctx, r.client, condition); err != nil {
-				logger.Info("failed to update status condition", "reason", err.Error())
-			}
+			continue
+		}
 
+		if needsReconcile {
+			r.eventCh <- event.GenericEvent{Object: &item}
+		}
+	}
+
+	return nil
+}
+
+// processPVCA processes a single PersistentVolumeClaimAutoscaler, checking all
+// its target PVCs and updating the RecommendationAvailable condition.
+// Returns true if any PVC needs reconciliation.
+func (r *Runner) processPVCA(ctx context.Context, item *v1alpha1.PersistentVolumeClaimAutoscaler, metricsData map[client.ObjectKey]*metricssource.VolumeInfo) (bool, error) {
+	var (
+		hasError       bool
+		needsReconcile bool
+		errorReason    string
+	)
+
+	logger := log.FromContext(ctx,
+		"controller", common.ControllerName,
+		"namespace", item.Namespace,
+		"name", item.Name,
+	)
+
+	pvcNames := []string{item.Spec.TargetRef.Name}
+	messages := make([]string, 0, len(pvcNames))
+
+	for _, pvcName := range pvcNames {
+		pvcObjKey := client.ObjectKey{Namespace: item.Namespace, Name: pvcName}
+		volInfo := metricsData[pvcObjKey]
+
+		ok, err := r.shouldReconcilePVC(ctx, item, pvcName, volInfo)
+		if err != nil {
+			logger.Info("skipping persistentvolumeclaim", "pvc", pvcName, "reason", err.Error())
+			metrics.SkippedTotal.WithLabelValues(item.Namespace, item.Name, err.Error()).Inc()
+
+			hasError = true
+			errorReason = r.mapErrorToReason(err)
+			messages = append(messages, fmt.Sprintf(" - %s: %s", pvcName, err.Error()))
 			continue
 		}
 
 		if ok {
-			toReconcile = append(toReconcile, item)
-		} else {
-			condition := metav1.Condition{
-				Type:    utils.ConditionTypeHealthy,
-				Status:  metav1.ConditionTrue,
-				Reason:  "Reconciling",
-				Message: "Successfully reconciled",
-			}
-			if err := item.SetCondition(ctx, r.client, condition); err != nil {
-				logger.Info("failed to update status condition", "reason", err.Error())
-			}
+			needsReconcile = true
 		}
+		messages = append(messages, fmt.Sprintf(" - %s: metrics fetched", pvcName))
 	}
 
-	for _, item := range toReconcile {
-		e := event.GenericEvent{
-			Object: &item,
-		}
-		r.eventCh <- e
+	condition := r.buildRecommendationCondition(hasError, errorReason, messages)
+	if err := item.SetCondition(ctx, r.client, condition); err != nil {
+		logger.Info("failed to update status condition", "reason", err.Error())
+		return false, err
 	}
 
-	return nil
+	if hasError {
+		return false, fmt.Errorf("error processing PVCs")
+	}
+
+	return needsReconcile, nil
+}
+
+// mapErrorToReason maps an error to the appropriate condition reason.
+func (r *Runner) mapErrorToReason(err error) string {
+	if errors.Is(err, common.ErrStaleMetrics) {
+		return utils.ReasonStaleMetrics
+	}
+	return utils.ReasonMetricsFetchError
+}
+
+// buildRecommendationCondition builds the RecommendationAvailable condition
+// based on whether there were errors during PVC processing.
+func (r *Runner) buildRecommendationCondition(hasError bool, errorReason string, messages []string) metav1.Condition {
+	condition := metav1.Condition{
+		Type:    utils.ConditionTypeRecommendationAvailable,
+		Message: strings.Join(messages, "\n"),
+	}
+
+	if hasError {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = errorReason
+		return condition
+	}
+
+	condition.Status = metav1.ConditionTrue
+	condition.Reason = utils.ReasonMetricsFetched
+	return condition
 }
 
 // updatePVCAStatus updates the status of the
@@ -277,8 +318,8 @@ func (r *Runner) updatePVCAStatus(ctx context.Context, obj *v1alpha1.PersistentV
 // [corev1.PersistentVolumeClaim] object targeted by
 // [v1alpha1.PersistentVolumeClaimAutoscaler] should be considered for
 // reconciliation.
-func (r *Runner) shouldReconcilePVC(ctx context.Context, pvca *v1alpha1.PersistentVolumeClaimAutoscaler, volInfo *metricssource.VolumeInfo) (bool, error) {
-	pvcObjKey := client.ObjectKey{Namespace: pvca.Namespace, Name: pvca.Spec.TargetRef.Name}
+func (r *Runner) shouldReconcilePVC(ctx context.Context, pvca *v1alpha1.PersistentVolumeClaimAutoscaler, pvcName string, volInfo *metricssource.VolumeInfo) (bool, error) {
+	pvcObjKey := client.ObjectKey{Namespace: pvca.Namespace, Name: pvcName}
 	pvcObj := &corev1.PersistentVolumeClaim{}
 	if err := r.client.Get(ctx, pvcObjKey, pvcObj); err != nil {
 		return false, err
