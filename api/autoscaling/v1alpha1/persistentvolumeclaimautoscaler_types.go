@@ -76,6 +76,32 @@ type PersistentVolumeClaimAutoscalerSpec struct {
 	VolumePolicies []VolumePolicy `json:"volumePolicies"`
 }
 
+type PersistentVolumeClaimStatus struct {
+	// Name specifies the name of the PVC.
+	Name string `json:"name,omitempty"`
+
+	// UsedSpacePercentage specifies the last observed used space of the PVC
+	// as a percentage.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	UsedSpacePercentage int `json:"usedSpacePercentage,omitempty"`
+
+	// UsedInodesPercentage specifies the last observed used inodes of the
+	// PVC as a percentage.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	UsedInodesPercentage int `json:"usedInodesPercentage,omitempty"`
+
+	// CurrentSize specifies the current size of the PVC.
+	CurrentSize resource.Quantity `json:"currentSize,omitempty"`
+
+	// TargetSize specifies the new size to which the PVC will be resized.
+	TargetSize resource.Quantity `json:"targetSize,omitempty"`
+
+	// UsedByPods specifies the pods using this PVC.
+	UsedByPods []string `json:"usedByPods,omitempty"`
+}
+
 // PersistentVolumeClaimAutoscalerStatus defines the observed state of
 // PersistentVolumeClaimAutoscaler
 type PersistentVolumeClaimAutoscalerStatus struct {
@@ -108,6 +134,9 @@ type PersistentVolumeClaimAutoscalerStatus struct {
 
 	// NewSize specifies the new size to which the PVC will be resized.
 	NewSize resource.Quantity `json:"newSize,omitempty"`
+
+	// PersistentVolumeClaims provides the status of each managed PVC.
+	PersistentVolumeClaims []PersistentVolumeClaimStatus `json:"persistentVolumeClaims,omitempty"`
 
 	// Conditions specifies the status conditions.
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
