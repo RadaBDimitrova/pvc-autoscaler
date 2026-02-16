@@ -18,7 +18,7 @@ var _ = Describe("Source", func() {
 				capacity           int
 				available          int
 				wantFreePercentage float64
-				wantUsedPercentage float64
+				wantUsedPercentage int
 			}{
 				{capacity: 1000, available: 100, wantFreePercentage: 10.0, wantUsedPercentage: 90.0},
 				{capacity: 1000, available: 200, wantFreePercentage: 20.0, wantUsedPercentage: 80.0},
