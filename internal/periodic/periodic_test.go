@@ -21,7 +21,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -40,7 +39,6 @@ func newRunner() (*Runner, error) {
 
 	runner, err := New(
 		WithClient(k8sClient),
-		WithEventChannel(eventCh),
 		WithEventRecorder(eventRecorder),
 		WithInterval(time.Second),
 		WithMetricsSource(metricsSource),
@@ -60,7 +58,6 @@ var _ = Describe("Periodic Runner", func() {
 		It("should fail without metrics source", func() {
 			runner, err := New(
 				WithClient(k8sClient),
-				WithEventChannel(eventCh),
 				WithEventRecorder(eventRecorder),
 				WithInterval(time.Second),
 				WithMetricsSource(nil), // should not be nil
@@ -69,22 +66,9 @@ var _ = Describe("Periodic Runner", func() {
 			Expect(runner).To(BeNil())
 		})
 
-		It("should fail without event channel", func() {
-			runner, err := New(
-				WithClient(k8sClient),
-				WithEventChannel(nil), // should not be nil
-				WithEventRecorder(eventRecorder),
-				WithInterval(time.Second),
-				WithMetricsSource(fake.New()),
-			)
-			Expect(err).To(MatchError(common.ErrNoEventChannel))
-			Expect(runner).To(BeNil())
-		})
-
 		It("should fail without client", func() {
 			runner, err := New(
 				WithClient(nil), // should not be nil
-				WithEventChannel(eventCh),
 				WithEventRecorder(eventRecorder),
 				WithInterval(time.Second),
 				WithMetricsSource(fake.New()),
@@ -96,7 +80,6 @@ var _ = Describe("Periodic Runner", func() {
 		It("should fail without event recorder", func() {
 			runner, err := New(
 				WithClient(k8sClient),
-				WithEventChannel(eventCh),
 				WithEventRecorder(nil), // should not be nil
 				WithInterval(time.Second),
 				WithMetricsSource(fake.New()),
@@ -797,8 +780,8 @@ var _ = Describe("Periodic Runner", func() {
 		})
 	})
 
-	Context("enqueueObjects", func() {
-		It("should not enqueue -- no autoscaler for PVCs", func() {
+	Context("reconcileAll", func() {
+		It("should not process -- no autoscaler for PVCs", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
@@ -858,28 +841,16 @@ var _ = Describe("Periodic Runner", func() {
 			}()
 			metricsSource.Start(newCtx)
 
-			// Reconfigure the periodic runner, so that we always
-			// start with a clean state of events. Also, reconfigure
-			// the metrics source.
-			eventCh := make(chan event.GenericEvent, 128)
-			withEventChOpt := WithEventChannel(eventCh)
+			// Reconfigure the periodic runner with the metrics source
 			withMetricsSourceOpt := WithMetricsSource(metricsSource)
-			withEventChOpt(runner)
 			withMetricsSourceOpt(runner)
 
-			// We should not see any events for this PVC, even if it
+			// We should not see any errors for this PVC, even if it
 			// is already full, since we haven't annotated it
-			Expect(runner.enqueueObjects(parentCtx)).To(Succeed())
-			waitCh := time.After(500 * time.Millisecond)
-			select {
-			case obj := <-eventCh:
-				Expect(obj).To(BeNil())
-			case <-waitCh:
-				break // nolint:revive
-			}
+			Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 		})
 
-		It("should not enqueue -- failed to get metrics", func() {
+		It("should not process -- failed to get metrics", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
@@ -925,10 +896,10 @@ var _ = Describe("Periodic Runner", func() {
 
 			// We should not see any events for this PVC, since the
 			// metrics source is returning errors
-			Expect(runner.enqueueObjects(parentCtx)).NotTo(Succeed())
+			Expect(runner.reconcileAll(parentCtx)).NotTo(Succeed())
 		})
 
-		It("should enqueue -- threshold has been reached", func() {
+		It("should process -- threshold has been reached", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
@@ -988,29 +959,17 @@ var _ = Describe("Periodic Runner", func() {
 			}()
 			metricsSource.Start(newCtx)
 
-			// Reconfigure the periodic runner, so that we always
-			// start with a clean state of events. Also, reconfigure
-			// the metrics source.
-			eventCh := make(chan event.GenericEvent, 128)
-			withEventChOpt := WithEventChannel(eventCh)
+			// Reconfigure the periodic runner with the metrics source
 			withMetricsSourceOpt := WithMetricsSource(metricsSource)
-			withEventChOpt(runner)
 			withMetricsSourceOpt(runner)
 
-			// We should see an event that our test PVC needs to be reconciled
-			Expect(runner.enqueueObjects(parentCtx)).To(Succeed())
-			waitCh := time.After(500 * time.Millisecond)
-			select {
-			case obj := <-eventCh:
-				Expect(obj).NotTo(BeNil())
-			case <-waitCh:
-				break // nolint:revive
-			}
+			// We should process the PVC that needs to be reconciled
+			Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 		})
 	})
 
 	Context("Start periodic runner", func() {
-		It("should fail to enqueue because of metrics source", func() {
+		It("should fail to reconcile because of metrics source", func() {
 			runner, err := newRunner()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(runner).NotTo(BeNil())
@@ -1058,7 +1017,7 @@ var _ = Describe("Periodic Runner", func() {
 			withIntervalOpt(runner)
 
 			// Inspect the log messages, that it did actually failed
-			// to enqueue objects
+			// to reconcile objects
 			var buf strings.Builder
 			w := io.MultiWriter(GinkgoWriter, &buf)
 			logger := zap.New(zap.WriteTo(w))
@@ -1067,7 +1026,7 @@ var _ = Describe("Periodic Runner", func() {
 			defer cancelFunc()
 			ctx2 := log.IntoContext(ctx1, logger)
 			Expect(runner.Start(ctx2)).To(Succeed())
-			Expect(buf.String()).To(ContainSubstring("failed to enqueue persistentvolumeclaimautoscalers"))
+			Expect(buf.String()).To(ContainSubstring("failed to reconcile persistentvolumeclaimautoscalers"))
 		})
 	})
 })
