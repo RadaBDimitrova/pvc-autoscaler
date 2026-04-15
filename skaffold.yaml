@@ -50,7 +50,7 @@ build:
 manifests:
   kustomize:
     paths:
-      - config/overlays/kind
+      - config/overlays/default
 deploy:
   kubectl:
     flags:
