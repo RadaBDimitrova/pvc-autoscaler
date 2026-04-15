@@ -66,7 +66,12 @@ sleep "${INITIAL_DELAY}"
 # --- Phase 1: Write first half ---
 log "FILL_PHASE1_START: writing ${FILL_HALF_MB}MB to /data/fill_part1.dat"
 dd if=/dev/zero of=/data/fill_part1.dat bs=1M count="${FILL_HALF_MB}" 2>/dev/null
+PHASE1_USAGE=$(get_usage_pct)
 log "FILL_PHASE1_DONE: wrote ${FILL_HALF_MB}MB"
+if [ "${PHASE1_USAGE}" -ge "${THRESHOLD_PCT}" ]; then
+  log "PHASE1_THRESHOLD_EXCEEDED: usage ${PHASE1_USAGE}% >= ${THRESHOLD_PCT}% after first half fill — aborting"
+  exit 1
+fi
 
 # --- Phase 2: Write second half ---
 log "FILL_PHASE2_START: writing ${FILL_HALF_MB}MB to /data/fill_part2.dat"
