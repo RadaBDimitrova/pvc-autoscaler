@@ -404,6 +404,26 @@ func (r *Runner) resizePVC(ctx context.Context, pvca *v1alpha1.PersistentVolumeC
 	currSpecSize := pvcObj.Spec.Resources.Requests.Storage()
 	currStatusSize := pvcObj.Status.Capacity.Storage()
 
+	// A resize is already in-flight if the requested size (spec) is
+	// larger than the actual size (status). This covers the window
+	// between patching spec.resources.requests and the PVC conditions
+	// (Resizing, FileSystemResizePending) being set by the storage
+	// controller or kubelet, which can be significant under load.
+	if currSpecSize.Cmp(*currStatusSize) > 0 {
+		logger.Info("resize already in-flight: spec.requests > status.capacity",
+			"specSize", currSpecSize.String(),
+			"statusCapacity", currStatusSize.String(),
+		)
+		condition := metav1.Condition{
+			Type:    string(v1alpha1.ConditionTypeResizing),
+			Status:  metav1.ConditionTrue,
+			Reason:  ReasonReconcile,
+			Message: fmt.Sprintf(" - %s: resize in-flight from %s to %s", pvcObj.Name, currStatusSize.String(), currSpecSize.String()),
+		}
+
+		return pvca.SetCondition(ctx, r.client, condition)
+	}
+
 	// Currently only one policy is supported, since only one PVC can be targeted by a PVCA object
 	policy := pvca.Spec.VolumePolicies[0]
 

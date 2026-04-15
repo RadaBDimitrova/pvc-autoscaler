@@ -732,6 +732,80 @@ var _ = Describe("Periodic Runner", func() {
 				),
 			)
 
+			It("should skip resize when in-flight and proceed once completed", func() {
+				By("Patching PVC spec.requests to 2Gi while status.capacity remains 1Gi")
+				pvcPatch := client.MergeFrom(pvc.DeepCopy())
+				pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+				Expect(k8sClient.Patch(parentCtx, pvc, pvcPatch)).To(Succeed())
+
+				By("Setting up PVCA status with volume recommendations")
+				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
+				pvca.Status.VolumeRecommendations = []v1alpha1.VolumeRecommendation{
+					{
+						Name: "test-pvc",
+						Current: v1alpha1.CurrentVolumeStatus{
+							Size:             ptr.To(resource.MustParse("2Gi")),
+							UsedSpacePercent: ptr.To(95),
+						},
+					},
+				}
+				Expect(k8sClient.Status().Patch(parentCtx, pvca, pvcaPatch)).To(Succeed())
+
+				var buf strings.Builder
+				w := io.MultiWriter(GinkgoWriter, &buf)
+				logger := zap.New(zap.WriteTo(w))
+				newCtx := log.IntoContext(parentCtx, logger)
+
+				By("Calling resizePVC - should detect in-flight resize and skip")
+				Expect(runner.resizePVC(newCtx, pvca, "passing storage threshold")).To(Succeed())
+				Expect(buf.String()).To(ContainSubstring("resize already in-flight: spec.requests > status.capacity"))
+
+				By("Verifying PVC was NOT resized to 3Gi")
+				var currentPvc corev1.PersistentVolumeClaim
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvc), &currentPvc)).To(Succeed())
+				Expect(currentPvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("2Gi")))
+
+				By("Verifying the Resizing condition was set")
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), pvca)).To(Succeed())
+				Expect(pvca.Status.Conditions).To(ContainElement(And(
+					HaveField("Type", string(v1alpha1.ConditionTypeResizing)),
+					HaveField("Status", metav1.ConditionTrue),
+					HaveField("Reason", ReasonReconcile),
+					HaveField("Message", ContainSubstring("resize in-flight from 1Gi to 2Gi")),
+				)))
+
+				By("Simulating completed resize: updating status.capacity to 2Gi")
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvc), pvc)).To(Succeed())
+				statusPatch := client.MergeFrom(pvc.DeepCopy())
+				pvc.Status.Capacity[corev1.ResourceStorage] = resource.MustParse("2Gi")
+				Expect(k8sClient.Status().Patch(parentCtx, pvc, statusPatch)).To(Succeed())
+
+				By("Updating PVCA status to indicate a new resize is needed")
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), pvca)).To(Succeed())
+				pvcaPatch = client.MergeFrom(pvca.DeepCopy())
+				pvca.Status.VolumeRecommendations = []v1alpha1.VolumeRecommendation{
+					{
+						Name: "test-pvc",
+						Current: v1alpha1.CurrentVolumeStatus{
+							Size:             ptr.To(resource.MustParse("3Gi")),
+							UsedSpacePercent: ptr.To(95),
+						},
+					},
+				}
+				Expect(k8sClient.Status().Patch(parentCtx, pvca, pvcaPatch)).To(Succeed())
+
+				buf.Reset()
+
+				By("Calling resizePVC again - should proceed with resize since spec == status")
+				Expect(runner.resizePVC(newCtx, pvca, "passing storage threshold")).To(Succeed())
+				Expect(buf.String()).To(ContainSubstring("resizing persistent volume claim"))
+				Expect(buf.String()).NotTo(ContainSubstring("resize already in-flight"))
+
+				By("Verifying PVC was resized to 3Gi")
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvc), &currentPvc)).To(Succeed())
+				Expect(currentPvc.Spec.Resources.Requests[corev1.ResourceStorage]).To(Equal(resource.MustParse("3Gi")))
+			})
+
 			It("should not resize if max capacity has been reached", func() {
 				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
 				pvca.Status.VolumeRecommendations = []v1alpha1.VolumeRecommendation{
