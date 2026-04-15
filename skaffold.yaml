@@ -19,13 +19,8 @@ deploy:
         version: 82.15.1
         namespace: monitoring
         createNamespace: true
-        setValues:
-          alertmanager.enabled: "false"
-          grafana.enabled: "false"
-          kubeStateMetrics.enabled: "false"
-          nodeExporter.enabled: "false"
-          prometheusOperator.enabled: "true"
-          prometheus.enabled: "true"
+        valuesFiles:
+          - hack/kube-prometheus-stack-values.yaml
 ---
 apiVersion: skaffold/v4beta12
 kind: Config
