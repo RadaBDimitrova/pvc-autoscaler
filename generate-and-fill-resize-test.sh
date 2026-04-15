@@ -10,8 +10,7 @@ FILL_COUNT=100
 FILL_PERCENT=85
 PVC_SIZE_BYTES=$((1 * 1024 * 1024 * 1024))  # 1Gi
 FILL_BYTES=$(( PVC_SIZE_BYTES * FILL_PERCENT / 100 ))
-FILL_MB=$(( FILL_BYTES / 1024 / 1024 ))
-FILL_HALF_MB=$(( FILL_MB / 2 ))
+FILL_CHUNK_MB=200
 PARALLELISM=20
 RESIZE_POLL_SEC=10
 RESIZE_MAX_ATTEMPTS=30
@@ -34,16 +33,14 @@ trap "rm -f ${MANIFEST_FILE}" EXIT
 # Build the in-pod script for filled pods (first FILL_COUNT)
 # The pod will:
 #   1. Wait INITIAL_DELAY seconds (so all pods start filling roughly together)
-#   2. Write first half of data, log timestamp
-#   3. Write second half of data, log timestamp
-#   4. Log when usage crosses the threshold
-#   5. Monitor for volume resize, log timestamp and compute duration
+#   2. Write FILL_CHUNK_MB increments until usage >= threshold
+#   3. Monitor for volume resize, log timestamp and compute duration
 read -r -d '' FILL_SCRIPT <<'EOFSCRIPT' || true
 #!/bin/sh
 log() { echo "[$(date +%Y-%m-%dT%H:%M:%S)] $1"; }
 
 INITIAL_DELAY=__INITIAL_DELAY__
-FILL_HALF_MB=__FILL_HALF_MB__
+FILL_CHUNK_MB=__FILL_CHUNK_MB__
 THRESHOLD_PCT=__THRESHOLD_PERCENT__
 RESIZE_TIMEOUT=__RESIZE_TIMEOUT__
 
@@ -63,35 +60,27 @@ log "POD_STARTED"
 log "Sleeping ${INITIAL_DELAY}s before filling..."
 sleep "${INITIAL_DELAY}"
 
-# --- Phase 1: Write first half ---
-log "FILL_PHASE1_START: writing ${FILL_HALF_MB}MB to /data/fill_part1.dat"
-dd if=/dev/zero of=/data/fill_part1.dat bs=1M count="${FILL_HALF_MB}" 2>/dev/null
-PHASE1_USAGE=$(get_usage_pct)
-log "FILL_PHASE1_DONE: wrote ${FILL_HALF_MB}MB"
-if [ "${PHASE1_USAGE}" -ge "${THRESHOLD_PCT}" ]; then
-  log "PHASE1_THRESHOLD_EXCEEDED: usage ${PHASE1_USAGE}% >= ${THRESHOLD_PCT}% after first half fill — aborting"
-  exit 1
-fi
+CHUNK=0
+TOTAL_WRITTEN=0
+while true; do
+  CHUNK=$((CHUNK + 1))
+  FILL_FILE="/data/fill_chunk${CHUNK}.dat"
+  log "FILL_CHUNK${CHUNK}_START: writing ${FILL_CHUNK_MB}MB to ${FILL_FILE}"
+  dd if=/dev/zero of="${FILL_FILE}" bs=1M count="${FILL_CHUNK_MB}" 2>/dev/null
+  TOTAL_WRITTEN=$((TOTAL_WRITTEN + FILL_CHUNK_MB))
+  CURRENT_USAGE=$(get_usage_pct)
+  log "FILL_CHUNK${CHUNK}_DONE: wrote ${FILL_CHUNK_MB}MB (total: ${TOTAL_WRITTEN}MB, usage: ${CURRENT_USAGE}%)"
 
-# --- Phase 2: Write second half ---
-log "FILL_PHASE2_START: writing ${FILL_HALF_MB}MB to /data/fill_part2.dat"
-dd if=/dev/zero of=/data/fill_part2.dat bs=1M count="${FILL_HALF_MB}" 2>/dev/null
-FILL_DONE_TS=$(date +%s)
-log "FILL_PHASE2_DONE: wrote ${FILL_HALF_MB}MB (total: $((FILL_HALF_MB * 2))MB)"
-
-# --- Phase 3: Check if threshold is crossed ---
-USAGE_PCT=$(get_usage_pct)
-TOTAL_KB=$(get_total_kb)
-AVAIL_KB=$(get_avail_kb)
-log "USAGE_AFTER_FILL: ${USAGE_PCT}% (total: ${TOTAL_KB}KB, avail: ${AVAIL_KB}KB)"
-
-if [ "${USAGE_PCT}" -ge "${THRESHOLD_PCT}" ]; then
-  THRESHOLD_TS=$(date +%s)
-  log "THRESHOLD_REACHED: usage ${USAGE_PCT}% >= ${THRESHOLD_PCT}%"
-else
-  log "THRESHOLD_NOT_REACHED: usage ${USAGE_PCT}% < ${THRESHOLD_PCT}% (volume may already be resized from previous run)"
-  THRESHOLD_TS=${FILL_DONE_TS}
-fi
+  if [ "${CURRENT_USAGE}" -ge "${THRESHOLD_PCT}" ]; then
+    FILL_DONE_TS=$(date +%s)
+    THRESHOLD_TS=$(date +%s)
+    TOTAL_KB=$(get_total_kb)
+    AVAIL_KB=$(get_avail_kb)
+    log "THRESHOLD_REACHED: usage ${CURRENT_USAGE}% >= ${THRESHOLD_PCT}% after ${CHUNK} chunks (${TOTAL_WRITTEN}MB total)"
+    log "USAGE_AFTER_FILL: ${CURRENT_USAGE}% (total: ${TOTAL_KB}KB, avail: ${AVAIL_KB}KB)"
+    break
+  fi
+done
 
 # --- Phase 4: Monitor for volume resize ---
 INITIAL_SIZE=$(get_total_kb)
@@ -127,7 +116,7 @@ EOFSCRIPT
 
 # Substitute placeholders
 FILL_SCRIPT="${FILL_SCRIPT//__INITIAL_DELAY__/${INITIAL_DELAY}}"
-FILL_SCRIPT="${FILL_SCRIPT//__FILL_HALF_MB__/${FILL_HALF_MB}}"
+FILL_SCRIPT="${FILL_SCRIPT//__FILL_CHUNK_MB__/${FILL_CHUNK_MB}}"
 FILL_SCRIPT="${FILL_SCRIPT//__THRESHOLD_PERCENT__/${THRESHOLD_PERCENT}}"
 FILL_SCRIPT="${FILL_SCRIPT//__RESIZE_TIMEOUT__/${RESIZE_TIMEOUT}}"
 
