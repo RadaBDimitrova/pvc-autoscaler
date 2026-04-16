@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hack/common.sh"
 
 NAMESPACE="monitoring"
-THRESHOLD_PERCENT=50
+THRESHOLD_PERCENT=20
 RESIZE_POLL_SEC=10
 RESIZE_MAX_ATTEMPTS=30
 RESIZE_TIMEOUT=300
@@ -71,18 +71,23 @@ _msg_info "Current PVC capacity: ${INITIAL_CAPACITY}"
 CAPACITY_VALUE=$(echo "${INITIAL_CAPACITY}" | sed 's/[^0-9]//g')
 CAPACITY_UNIT=$(echo "${INITIAL_CAPACITY}" | sed 's/[0-9]//g')
 
-# Compute expected capacity after resize (double the current)
-EXPECTED_CAPACITY="$(( CAPACITY_VALUE * 2 ))${CAPACITY_UNIT}"
+# Compute expected capacity after resize (current + max(10%, 1Gi)),
+# matching the autoscaler's default StepPercent=10 and MinStepAbsolute=1Gi.
+INCREASE=$(( (CAPACITY_VALUE + 9) / 10 ))
+if [[ ${INCREASE} -lt 1 ]]; then
+  INCREASE=1
+fi
+EXPECTED_CAPACITY="$(( CAPACITY_VALUE + INCREASE ))${CAPACITY_UNIT}"
 _msg_info "Expected capacity after resize: ${EXPECTED_CAPACITY}"
 
 ###############################################################################
 # Step 2: Create PersistentVolumeClaimAutoscaler for the Prometheus PVC
 ###############################################################################
 PVCA_NAME="pvca-prometheus"
-MAX_CAPACITY="$(( CAPACITY_VALUE * 3 ))${CAPACITY_UNIT}"
+MAX_CAPACITY="60${CAPACITY_UNIT}"
 
 if [[ "${INITIAL_UPSCALE}" == "true" ]]; then
-  PVCA_THRESHOLD=5
+  PVCA_THRESHOLD=2
 else
   PVCA_THRESHOLD="${THRESHOLD_PERCENT}"
 fi
@@ -118,9 +123,9 @@ _msg_info "Current usage: ${USAGE_BEFORE}%"
 
 if [[ "${INITIAL_UPSCALE}" == "true" ]]; then
   # --initial-upscale: PVCA threshold is set to 5%, so normal usage should already exceed it
-  if [[ "${USAGE_BEFORE}" -ge "${PVCA_THRESHOLD}" ]]; then
+  if [[ "${USAGE_BEFORE}" -gt "${PVCA_THRESHOLD}" ]]; then
     FILL_DONE_TS=$(date +%s)
-    _msg_info "Usage ${USAGE_BEFORE}% is already >= ${PVCA_THRESHOLD}% threshold — waiting for autoscaler to resize"
+    _msg_info "Usage ${USAGE_BEFORE}% is already > ${PVCA_THRESHOLD}% threshold — waiting for autoscaler to resize"
   else
     _msg_info "Usage ${USAGE_BEFORE}% is below ${PVCA_THRESHOLD}% — filling to exceed threshold"
     FILL_TARGET="${PVCA_THRESHOLD}"
@@ -144,9 +149,9 @@ if [[ -n "${FILL_TARGET:-}" ]]; then
       df "${PROM_DATA_DIR}" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
     _msg_info "Chunk ${CHUNK} done — wrote ${TOTAL_WRITTEN}MB total, usage: ${CURRENT_USAGE}%"
 
-    if [[ "${CURRENT_USAGE}" -ge "${FILL_TARGET}" ]]; then
+    if [[ "${CURRENT_USAGE}" -gt "${FILL_TARGET}" ]]; then
       FILL_DONE_TS=$(date +%s)
-      _msg_info "Threshold reached: usage ${CURRENT_USAGE}% >= ${FILL_TARGET}% after ${CHUNK} chunks (${TOTAL_WRITTEN}MB)"
+      _msg_info "Threshold reached: usage ${CURRENT_USAGE}% > ${FILL_TARGET}% after ${CHUNK} chunks (${TOTAL_WRITTEN}MB)"
       break
     fi
   done
