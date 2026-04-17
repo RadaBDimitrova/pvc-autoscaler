@@ -186,7 +186,28 @@ _ensure_pvc_capacity "${PROM_PVC}" "${NAMESPACE}" "${EXPECTED_CAPACITY}"
 _msg_info "PVC verified at ${EXPECTED_CAPACITY}"
 
 ###############################################################################
-# Step 5: Wait for filesystem resize and verify usage dropped
+# Step 5: Verify Kubernetes events for the resized PVC
+###############################################################################
+_msg_info "Checking Kubernetes events for PVC ${PROM_PVC}"
+
+pvc_events=$(kubectl get events -n "${NAMESPACE}" \
+  --field-selector "involvedObject.name=${PROM_PVC},involvedObject.kind=PersistentVolumeClaim" \
+  -o json 2>/dev/null || echo '{"items":[]}')
+
+threshold_ts=$(echo "${pvc_events}" | jq -r '[.items[] | select(.reason=="FreeSpaceThresholdReached")] | last | .lastTimestamp // .eventTime // "N/A"')
+resize_ts=$(echo "${pvc_events}" | jq -r '[.items[] | select(.reason=="ResizingStorage")] | last | .lastTimestamp // .eventTime // "N/A"')
+resize_msg=$(echo "${pvc_events}" | jq -r '[.items[] | select(.reason=="ResizingStorage")] | last | .message // "N/A"')
+
+_msg_info "  FreeSpaceThresholdReached: ${threshold_ts}"
+_msg_info "  ResizingStorage:           ${resize_ts}"
+if [[ "${resize_ts}" != "N/A" ]]; then
+  _msg_info "  Last resize message:       ${resize_msg}"
+else
+  _msg_info "  Warning: no ResizingStorage event found (events may have been evicted)"
+fi
+
+###############################################################################
+# Step 6: Wait for filesystem resize and verify usage dropped
 ###############################################################################
 _msg_info "Waiting for filesystem to reflect the new size..."
 
@@ -219,7 +240,7 @@ for attempt in $(seq 1 "${FS_MAX_ATTEMPTS}"); do
 done
 
 ###############################################################################
-# Step 6: Cleanup fill files
+# Step 7: Cleanup fill files
 ###############################################################################
 if [[ ${CHUNK} -gt 0 ]]; then
   _msg_info "Removing ${CHUNK} fill files from Prometheus volume"

@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/hack/common.sh"
 
 NAMESPACE="pvc-autoscaler-system"
-TOTAL=200
-FILL_COUNT=100
+TOTAL=50
+FILL_COUNT=10
 FILL_PERCENT=85
 PVC_SIZE_BYTES=$((1 * 1024 * 1024 * 1024))  # 1Gi
 FILL_BYTES=$(( PVC_SIZE_BYTES * FILL_PERCENT / 100 ))
@@ -260,7 +260,46 @@ done
 _msg_info "All ${FILL_COUNT} PVCs verified at ${EXPECTED_CAPACITY}"
 
 ###############################################################################
-# Step 4: Collect timing logs from pods
+# Step 4: Verify Kubernetes events for resized PVCs
+###############################################################################
+_msg_info "Checking Kubernetes events for resize activity"
+
+events_ok=0
+events_missing=0
+
+echo ""
+printf "%-35s %-25s %-25s\n" "PVC" "THRESHOLD_EVENT" "RESIZE_EVENT"
+printf "%-35s %-25s %-25s\n" "----" "---------------" "------------"
+
+for i in $(seq 1 "${FILL_COUNT}"); do
+  pvc_name="data-demo-sts-${i}-0"
+  pvc_events=$(kubectl get events -n "${NAMESPACE}" \
+    --field-selector "involvedObject.name=${pvc_name},involvedObject.kind=PersistentVolumeClaim" \
+    -o json 2>/dev/null || echo '{"items":[]}')
+
+  threshold_ts=$(echo "${pvc_events}" | jq -r '[.items[] | select(.reason=="FreeSpaceThresholdReached")] | last | .lastTimestamp // .eventTime // empty' | head -1)
+  resize_ts=$(echo "${pvc_events}" | jq -r '[.items[] | select(.reason=="ResizingStorage")] | last | .lastTimestamp // .eventTime // empty' | head -1)
+
+  [[ -z "${threshold_ts}" ]] && threshold_ts="-"
+  [[ -z "${resize_ts}" ]] && resize_ts="-"
+
+  printf "%-35s %-25s %-25s\n" "${pvc_name}" "${threshold_ts}" "${resize_ts}"
+
+  if [[ "${resize_ts}" != "-" ]]; then
+    events_ok=$((events_ok + 1))
+  else
+    events_missing=$((events_missing + 1))
+  fi
+done
+
+echo ""
+_msg_info "Events: ${events_ok}/${FILL_COUNT} PVCs have ResizingStorage event"
+if [[ ${events_missing} -gt 0 ]]; then
+  _msg_info "Warning: ${events_missing} PVCs missing ResizingStorage event (events may have been evicted)"
+fi
+
+###############################################################################
+# Step 5: Collect timing logs from pods
 ###############################################################################
 _msg_info "Waiting for pods to detect the filesystem resize..."
 

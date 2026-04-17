@@ -10,14 +10,14 @@ prometheusOperator:
   enabled: true
 prometheus:
   enabled: true
-
-storage:
-  volumeClaimTemplate:
-    metadata:
-      name: prometheus-db
-    spec:
-      accessModes:
-      - ReadWriteOnce
-      resources:
-        requests:
-          storage: 5Gi
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        metadata:
+          name: prometheus-db
+        spec:
+          accessModes:
+          - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="pvc-autoscaler-system"
-TOTAL=200
+TOTAL=50
 
 echo "=== Deleting ${TOTAL} StatefulSets + PVCAutoscalers ==="
 
