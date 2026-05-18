@@ -186,14 +186,23 @@ function _wait_for_pvca_cooldown() {
 
   for i in $( seq 1 "${_max_attempts}" ); do
     _msg_info "[${i}/${_max_attempts}] waiting for PVCA ${_pvca_name} to be in cooldown ..."
+    local _condition=$( kubectl get pvca "${_pvca_name}" -n "${_namespace}" -o yaml | \
+      yq '.status.conditions[]? | select(.type == "Resizing") | "status=" + .status + " reason=" + .reason + " message=" + .message' )
     local _reason=$( kubectl get pvca "${_pvca_name}" -n "${_namespace}" -o jsonpath='{.status.conditions[?(@.type=="Resizing")].reason}' )
     if [ "${_reason}" == "PersistentVolumeClaimResizeCooldown" ]; then
       _msg_info "PVCA ${_pvca_name} is in cooldown"
       return
     fi
+    if [ -n "${_condition}" ]; then
+      _msg_info "current Resizing condition for PVCA ${_pvca_name}: ${_condition}"
+    else
+      _msg_info "PVCA ${_pvca_name} currently has no Resizing condition"
+    fi
     sleep "${_poll_sec}"
   done
 
+  _msg_info "final PVCA state when failing cooldown wait:"
+  kubectl get pvca "${_pvca_name}" -n "${_namespace}" -o yaml || true
   _msg_error "PVCA ${_pvca_name} did not enter cooldown state" 1
 }
 
@@ -205,7 +214,7 @@ export_artifacts() {
   echo "> Exporting events of kind cluster '$cluster_name' > '$ARTIFACTS/$cluster_name'"
   export_events_for_cluster "$ARTIFACTS/$cluster_name"
 
-  export_resource_yamls_for pods pvcas
+  export_resource_yamls_for pods persistentvolumeclaimautoscalers.autoscaling.gardener.cloud
 }
 
 export_resource_yamls_for() {
