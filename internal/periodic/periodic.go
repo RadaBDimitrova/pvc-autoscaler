@@ -242,6 +242,7 @@ func (r *Runner) reconcileAll(ctx context.Context) error {
 	// Nothing to do for now
 	if len(pvcaList.Items) == 0 {
 		metrics.MaxCapacityReached.Set(0)
+		metrics.ResizeStartedTimestampSeconds.Reset()
 
 		return nil
 	}
@@ -252,6 +253,8 @@ func (r *Runner) reconcileAll(ctx context.Context) error {
 	}
 
 	pvcaToPVCsMap, pvcToOwnersMap := r.fetchPVCsForPVCAs(ctx, logger, pvcaList.Items)
+
+	metrics.ResizeStartedTimestampSeconds.Reset()
 
 	atMaxCapacity := 0
 	for pvca, pvcs := range pvcaToPVCsMap {
@@ -429,7 +432,11 @@ func (r *Runner) reconcilePVCA(
 		if !shouldResize && scalingReason == "max capacity reached" {
 			*atMaxCapacity++
 			// Only when no resize is in progress do we record the terminal "max capacity reached" condition.
-			if !r.isResizeInProgress(logger, pvc, "", resizingConditions) {
+			if r.isResizeInProgress(logger, pvc, "", resizingConditions) {
+				metrics.ResizeStartedTimestampSeconds.
+					WithLabelValues(pvc.Namespace, pvc.Name).
+					Set(resizeStartTime(volumeRecommendation))
+			} else {
 				resizingConditions.addCondition(metav1.Condition{
 					Type:    string(v1alpha1.ConditionTypeResizing),
 					Status:  metav1.ConditionFalse,
@@ -443,6 +450,11 @@ func (r *Runner) reconcilePVCA(
 		}
 
 		inProgress := r.isResizeInProgress(logger, pvc, scalingReason, resizingConditions)
+		if inProgress {
+			metrics.ResizeStartedTimestampSeconds.
+				WithLabelValues(pvc.Namespace, pvc.Name).
+				Set(resizeStartTime(volumeRecommendation))
+		}
 
 		if shouldResize && !inProgress {
 			volumeRecommendation, err = r.resizePVC(ctx, logger, pvc, *policy, scalingReason, volumeRecommendation, resizingConditions)
@@ -651,6 +663,19 @@ func (r *Runner) shouldResizePVC(pvc *corev1.PersistentVolumeClaim, policy v1alp
 	default:
 		return false, ""
 	}
+}
+
+// resizeStartTime returns the unix time (seconds) the in-flight resize started,
+// taken from the recommendation's LastResizeTime. When that is unset (e.g. the
+// autoscaler observed an externally driven resize, or restarted before it was
+// recorded) it falls back to now, so a freshly observed stuck resize still ages
+// from a sane baseline.
+func resizeStartTime(vr v1alpha1.VolumeRecommendation) float64 {
+	if vr.LastResizeTime != nil {
+		return float64(vr.LastResizeTime.Unix())
+	}
+
+	return float64(time.Now().Unix())
 }
 
 // isResizeInProgress checks whether the [corev1.PersistentVolumeClaim] is currently being resized.
