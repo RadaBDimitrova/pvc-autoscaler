@@ -6,6 +6,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,18 @@ func ParsePercentage(s string) (float64, error) {
 	}
 
 	return val, nil
+}
+
+// scaledDueToClause renders the ", due to <reason>" fragment used in the
+// in-progress resize messages. It returns an empty string when scalingReason is
+// empty, so a PVC whose resize is observed without a scaling reason (e.g. one
+// that is already at max capacity) does not produce a dangling "due to ,".
+func ScaledDueToClause(scalingReason string) string {
+	if scalingReason == "" {
+		return ""
+	}
+
+	return fmt.Sprintf(" due to %s", scalingReason)
 }
 
 // IsPersistentVolumeClaimConditionTrue is a predicate which tests whether the
