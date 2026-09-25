@@ -32,6 +32,7 @@ import (
 	"github.com/gardener/pvc-autoscaler/internal/healthcheck"
 	"github.com/gardener/pvc-autoscaler/internal/metrics"
 	metricssource "github.com/gardener/pvc-autoscaler/internal/metrics/source"
+	"github.com/gardener/pvc-autoscaler/internal/recommender"
 	"github.com/gardener/pvc-autoscaler/internal/resizer"
 	"github.com/gardener/pvc-autoscaler/internal/status/conditions"
 	"github.com/gardener/pvc-autoscaler/internal/target/pvcfetcher"
@@ -408,12 +409,14 @@ func (r *Runner) reconcilePVCA(
 		}
 
 		shouldResize, scalingReason := r.shouldResizePVC(pvc, *policy, volumeRecommendation)
-		inProgress := r.isResizeInProgress(logger, pvc, scalingReason, resizingConditions)
 
-		if shouldResize && !inProgress {
-			volumeRecommendation, err = resizer.ResizePVC(ctx, logger, r.client, r.eventRecorder, pvc, *policy, scalingReason, volumeRecommendation, resizingConditions)
-			if err != nil {
-				logger.Error(err, "failed to resize pvc")
+		if shouldResize && !r.isResizeInProgress(logger, pvc, scalingReason, resizingConditions) {
+			recommendation := recommender.RecommendResize(logger, r.eventRecorder, pvc, scalingReason, *policy, volumeRecommendation, resizingConditions)
+			if recommendation.TargetSize != nil {
+				volumeRecommendation, err = resizer.ResizePVC(ctx, logger, r.client, r.eventRecorder, pvc, scalingReason, recommendation, volumeRecommendation, resizingConditions)
+				if err != nil {
+					logger.Error(err, "failed to resize pvc")
+				}
 			}
 		}
 
