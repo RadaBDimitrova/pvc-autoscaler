@@ -18,7 +18,6 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -32,6 +31,7 @@ import (
 	"github.com/gardener/pvc-autoscaler/internal/healthcheck"
 	"github.com/gardener/pvc-autoscaler/internal/metrics"
 	metricssource "github.com/gardener/pvc-autoscaler/internal/metrics/source"
+	"github.com/gardener/pvc-autoscaler/internal/recommender"
 	"github.com/gardener/pvc-autoscaler/internal/resizer"
 	"github.com/gardener/pvc-autoscaler/internal/status/conditions"
 	"github.com/gardener/pvc-autoscaler/internal/target/pvcfetcher"
@@ -407,11 +407,9 @@ func (r *Runner) reconcilePVCA(
 			continue
 		}
 
-		shouldResize, scalingReason := r.shouldResizePVC(pvc, *policy, volumeRecommendation)
-		inProgress := r.isResizeInProgress(logger, pvc, scalingReason, resizingConditions)
-
-		if shouldResize && !inProgress {
-			volumeRecommendation, err = resizer.ResizePVC(ctx, logger, r.client, r.eventRecorder, pvc, *policy, scalingReason, volumeRecommendation, resizingConditions)
+		recommendation := recommender.RecommendResize(logger, r.eventRecorder, pvc, *policy, volumeRecommendation, resizingConditions)
+		if recommendation.TargetSize != nil {
+			volumeRecommendation, err = resizer.ResizePVC(ctx, logger, r.client, r.eventRecorder, pvc, recommendation, volumeRecommendation, resizingConditions)
 			if err != nil {
 				logger.Error(err, "failed to resize pvc")
 			}
@@ -540,129 +538,6 @@ func (r *Runner) validatePVC(ctx context.Context, pvc *corev1.PersistentVolumeCl
 	}
 
 	return nil
-}
-
-// shouldResizePVC is a predicate which checks whether the
-// [corev1.PersistentVolumeClaim] object targeted by the
-// [v1alpha1.PersistentVolumeClaimAutoscaler] should be considered for
-// resize. When it returns true, it also returns the scaling reason.
-func (r *Runner) shouldResizePVC(pvc *corev1.PersistentVolumeClaim, policy v1alpha1.VolumePolicy, volumeRecommendation v1alpha1.VolumeRecommendation) (bool, string) {
-	var (
-		threshold         = *policy.ScaleUp.UtilizationThresholdPercent
-		usedSpacePercent  = ptr.Deref(volumeRecommendation.Current.UsedSpacePercent, 0)
-		usedInodesPercent = ptr.Deref(volumeRecommendation.Current.UsedInodesPercent, 0)
-	)
-
-	switch {
-	// Used space reached threshold
-	case usedSpacePercent > threshold:
-		r.eventRecorder.Eventf(
-			pvc,
-			corev1.EventTypeWarning,
-			"UsedSpaceThresholdReached",
-			"used space (%d%%) exceeds the configured threshold (%d%%)",
-			usedSpacePercent,
-			threshold,
-		)
-		metrics.ThresholdReachedTotal.WithLabelValues(pvc.Namespace, pvc.Name, "space").Inc()
-
-		return true, "passing storage threshold"
-
-	// Used inodes reached threshold
-	case usedInodesPercent > threshold:
-		r.eventRecorder.Eventf(
-			pvc,
-			corev1.EventTypeWarning,
-			"UsedInodesThresholdReached",
-			"used inodes (%d%%) exceeds the configured threshold (%d%%)",
-			usedInodesPercent,
-			threshold,
-		)
-		metrics.ThresholdReachedTotal.WithLabelValues(pvc.Namespace, pvc.Name, "inodes").Inc()
-
-		return true, "passing inodes threshold"
-
-	// No need to reconcile the PVC for now
-	default:
-		return false, ""
-	}
-}
-
-// isResizeInProgress checks whether the [corev1.PersistentVolumeClaim] is currently being resized.
-// Returns true if a resize operation is in progress.
-func (r *Runner) isResizeInProgress(logger logr.Logger, pvc *corev1.PersistentVolumeClaim, scalingReason string, resizingConditions *conditions.ResizingConditionAggregator) bool {
-	currStatusSize := pvc.Status.Capacity.Storage()
-
-	if utils.IsPersistentVolumeClaimConditionTrue(pvc, corev1.PersistentVolumeClaimResizing) {
-		logger.Info("resize has been started")
-		resizingConditions.AddCondition(metav1.Condition{
-			Type:    string(v1alpha1.ConditionTypeResizing),
-			Status:  metav1.ConditionTrue,
-			Reason:  conditions.ReasonReconcile,
-			Message: fmt.Sprintf("%s: is being scaled due to %s, resize has been started", pvc.Name, scalingReason),
-		})
-
-		return true
-	}
-
-	if utils.IsPersistentVolumeClaimConditionTrue(pvc, corev1.PersistentVolumeClaimFileSystemResizePending) {
-		logger.Info("filesystem resize is pending")
-		resizingConditions.AddCondition(metav1.Condition{
-			Type:    string(v1alpha1.ConditionTypeResizing),
-			Status:  metav1.ConditionTrue,
-			Reason:  conditions.ReasonReconcile,
-			Message: fmt.Sprintf("%s: is being scaled due to %s, file system resize is pending", pvc.Name, scalingReason),
-		})
-
-		return true
-	}
-
-	if utils.IsPersistentVolumeClaimConditionTrue(pvc, corev1.PersistentVolumeClaimVolumeModifyingVolume) {
-		logger.Info("volume is being modified")
-		resizingConditions.AddCondition(metav1.Condition{
-			Type:    string(v1alpha1.ConditionTypeResizing),
-			Status:  metav1.ConditionTrue,
-			Reason:  conditions.ReasonReconcile,
-			Message: fmt.Sprintf("%s: is being scaled due to %s, volume is being modified", pvc.Name, scalingReason),
-		})
-
-		return true
-	}
-
-	scaledFromAnnotationValue, ok := pvc.Annotations[common.AnnotationPreviousSize]
-	if !ok {
-		// scaled-from annotation is missing from PVC which means it has not been scaled by the pvc-autoscaler.
-		return false
-	}
-
-	scaledFrom, err := resource.ParseQuantity(scaledFromAnnotationValue)
-	if err != nil {
-		resizingConditions.AddCondition(metav1.Condition{
-			Type:    string(v1alpha1.ConditionTypeResizing),
-			Status:  metav1.ConditionUnknown,
-			Reason:  conditions.ReasonReconcile,
-			Message: fmt.Sprintf("%s: could not parse %s annotation with value %s: %s", pvc.Name, common.AnnotationPreviousSize, scaledFromAnnotationValue, err.Error()),
-		})
-
-		return true
-	}
-
-	// If recorded size in the annotation is equal to the current status it means
-	// we are still waiting for the resize to complete. This is necessary as the controller responsible
-	// to do the resizing might have started it, but not yet updated the PVC's conditions.
-	if scaledFrom.Equal(*currStatusSize) {
-		logger.Info("persistent volume claim is still being resized")
-		resizingConditions.AddCondition(metav1.Condition{
-			Type:    string(v1alpha1.ConditionTypeResizing),
-			Status:  metav1.ConditionTrue,
-			Reason:  conditions.ReasonReconcile,
-			Message: fmt.Sprintf("%s: is being scaled due to %s, persistent volume claim is still being resized", pvc.Name, scalingReason),
-		})
-
-		return true
-	}
-
-	return false
 }
 
 // setStatus updates the status of the [v1alpha1.PersistentVolumeClaimAutoscaler]
