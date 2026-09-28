@@ -5,32 +5,22 @@
 package status_test
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
 	"github.com/gardener/pvc-autoscaler/internal/common"
 	"github.com/gardener/pvc-autoscaler/internal/status"
+	testutils "github.com/gardener/pvc-autoscaler/test/utils"
 )
-
-// makePVC builds an in-memory PVC with the given spec and status storage sizes.
-func makePVC(name, specSize, statusSize string) *corev1.PersistentVolumeClaim {
-	return &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(specSize)},
-			},
-		},
-		Status: corev1.PersistentVolumeClaimStatus{
-			Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(statusSize)},
-		},
-	}
-}
 
 // matchAllPolicy builds a VolumePolicy that matches every PVC name.
 func matchAllPolicy() v1alpha1.VolumePolicy {
@@ -41,10 +31,26 @@ func matchAllPolicy() v1alpha1.VolumePolicy {
 }
 
 var _ = Describe("Status", func() {
+	var (
+		ctx       context.Context
+		k8sClient client.Client
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		scheme := runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
+	})
+
 	Describe("#New", func() {
 		It("retains recommendations whose PVC exists and has a matching policy", func() {
 			existing := []v1alpha1.VolumeRecommendation{{Name: "pvc-a"}, {Name: "pvc-b"}}
-			pvcs := []*corev1.PersistentVolumeClaim{makePVC("pvc-a", "1Gi", "1Gi"), makePVC("pvc-b", "1Gi", "1Gi")}
+			pvcA, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			pvcB, err := testutils.CreatePVC(ctx, k8sClient, "pvc-b", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			pvcs := []*corev1.PersistentVolumeClaim{pvcA, pvcB}
 
 			st := status.New(existing, pvcs, []v1alpha1.VolumePolicy{matchAllPolicy()})
 
@@ -56,7 +62,9 @@ var _ = Describe("Status", func() {
 
 		It("drops recommendations whose PVC is no longer present", func() {
 			existing := []v1alpha1.VolumeRecommendation{{Name: "pvc-a"}, {Name: "gone"}}
-			pvcs := []*corev1.PersistentVolumeClaim{makePVC("pvc-a", "1Gi", "1Gi")}
+			pvcA, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			pvcs := []*corev1.PersistentVolumeClaim{pvcA}
 
 			st := status.New(existing, pvcs, []v1alpha1.VolumePolicy{matchAllPolicy()})
 
@@ -65,7 +73,9 @@ var _ = Describe("Status", func() {
 
 		It("drops recommendations that have no matching policy", func() {
 			existing := []v1alpha1.VolumeRecommendation{{Name: "pvc-a"}}
-			pvcs := []*corev1.PersistentVolumeClaim{makePVC("pvc-a", "1Gi", "1Gi")}
+			pvcA, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			pvcs := []*corev1.PersistentVolumeClaim{pvcA}
 			policy := matchAllPolicy()
 			policy.Match.Name = "other-*"
 
@@ -127,7 +137,8 @@ var _ = Describe("Status", func() {
 
 	Describe("#Observe", func() {
 		It("records the observed current state and defaults the target size from spec", func() {
-			pvc := makePVC("pvc-a", "1Gi", "1Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 
 			recommendation, err := status.Observe(v1alpha1.VolumeRecommendation{Name: "pvc-a"}, pvc, 60, 40, 1024*1024*1024)
 
@@ -146,7 +157,8 @@ var _ = Describe("Status", func() {
 		})
 
 		It("preserves an already-recommended target size", func() {
-			pvc := makePVC("pvc-a", "1Gi", "1Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 			existingTarget := resource.MustParse("2Gi")
 
 			recommendation, err := status.Observe(
@@ -159,16 +171,18 @@ var _ = Describe("Status", func() {
 		})
 
 		It("returns ErrStaleMetrics when capacity deviates beyond the 0.5Gi floor on a small PVC", func() {
-			pvc := makePVC("pvc-a", "1Gi", "1Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 
 			// status size is 1Gi; report ~200MiB capacity => delta ~824MiB > 0.5Gi floor.
-			_, err := status.Observe(v1alpha1.VolumeRecommendation{Name: "pvc-a"}, pvc, 5, 0, 200*1024*1024)
+			_, err = status.Observe(v1alpha1.VolumeRecommendation{Name: "pvc-a"}, pvc, 5, 0, 200*1024*1024)
 
 			Expect(err).To(MatchError(common.ErrStaleMetrics))
 		})
 
 		It("applies the deviation ratio tolerance on a large PVC", func() {
-			pvc := makePVC("pvc-a", "100Gi", "100Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "pvc-a", "100Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("deviating beyond the ratio tolerance")
 			_, errStale := status.Observe(v1alpha1.VolumeRecommendation{Name: "pvc-a"}, pvc, 5, 0, 95*1024*1024*1024)

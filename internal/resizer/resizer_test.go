@@ -25,22 +25,8 @@ import (
 	"github.com/gardener/pvc-autoscaler/internal/recommender"
 	"github.com/gardener/pvc-autoscaler/internal/resizer"
 	"github.com/gardener/pvc-autoscaler/internal/status/conditions"
+	testutils "github.com/gardener/pvc-autoscaler/test/utils"
 )
-
-// makePVC builds an in-memory PVC with the given spec and status storage sizes.
-func makePVC(specSize, statusSize string) *corev1.PersistentVolumeClaim {
-	return &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-pvc", Namespace: "default"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(specSize)},
-			},
-		},
-		Status: corev1.PersistentVolumeClaimStatus{
-			Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(statusSize)},
-		},
-	}
-}
 
 var _ = Describe("Resizer", func() {
 	var (
@@ -66,8 +52,9 @@ var _ = Describe("Resizer", func() {
 
 	Describe("#ResizePVC", func() {
 		It("does not patch the PVC when the resize strategy is Off", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			fakeClient := newClient(pvc)
+			fakeClient := newClient()
+			pvc, err := testutils.CreatePVC(ctx, fakeClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 			targetSize := resource.MustParse("2Gi")
 			recommendation := recommender.Recommendation{
 				TargetSize:     &targetSize,
@@ -93,8 +80,9 @@ var _ = Describe("Resizer", func() {
 		})
 
 		It("patches the PVC and records the resizing condition when the strategy applies", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			fakeClient := newClient(pvc)
+			fakeClient := newClient()
+			pvc, err := testutils.CreatePVC(ctx, fakeClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 			targetSize := resource.MustParse("2Gi")
 			recommendation := recommender.Recommendation{
 				TargetSize:     &targetSize,
@@ -137,12 +125,10 @@ var _ = Describe("Resizer", func() {
 			}
 		}
 
-		// eligiblePVC builds a bound, filesystem PVC referencing the given storage class.
-		eligiblePVC := func(scName string) *corev1.PersistentVolumeClaim {
-			pvc := makePVC("1Gi", "1Gi")
-			pvc.Spec.StorageClassName = ptr.To(scName)
-			pvc.Spec.VolumeMode = ptr.To(corev1.PersistentVolumeFilesystem)
-			pvc.Status.Phase = corev1.ClaimBound
+		// eligiblePVC creates a bound, filesystem PVC referencing the given storage class.
+		eligiblePVC := func(fakeClient client.Client, scName string) *corev1.PersistentVolumeClaim {
+			pvc, err := testutils.CreatePVC(ctx, fakeClient, "test-pvc", "1Gi", ptr.To(scName), ptr.To(corev1.PersistentVolumeFilesystem))
+			Expect(err).NotTo(HaveOccurred())
 
 			return pvc
 		}
@@ -150,55 +136,55 @@ var _ = Describe("Resizer", func() {
 		policy := v1alpha1.VolumePolicy{MaxCapacity: resource.MustParse("10Gi")}
 
 		It("returns no error for an eligible PVC", func() {
-			pvc := eligiblePVC("expandable")
 			fakeClient := newClient(storageClass("expandable", true))
+			pvc := eligiblePVC(fakeClient, "expandable")
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(Succeed())
 		})
 
 		It("errors when the current status capacity is invalid", func() {
-			pvc := eligiblePVC("expandable")
-			pvc.Status.Capacity = corev1.ResourceList{}
 			fakeClient := newClient(storageClass("expandable", true))
+			pvc := eligiblePVC(fakeClient, "expandable")
+			pvc.Status.Capacity = corev1.ResourceList{}
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(MatchError(ContainSubstring(".status.capacity.storage is invalid")))
 		})
 
 		It("errors when max capacity is less than the current size", func() {
-			pvc := eligiblePVC("expandable")
 			fakeClient := newClient(storageClass("expandable", true))
+			pvc := eligiblePVC(fakeClient, "expandable")
 			smallPolicy := v1alpha1.VolumePolicy{MaxCapacity: resource.MustParse("512Mi")}
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, smallPolicy)).To(MatchError(ContainSubstring("max capacity")))
 		})
 
 		It("returns ErrStorageClassNotFound when the PVC has no storage class", func() {
-			pvc := eligiblePVC("expandable")
-			pvc.Spec.StorageClassName = nil
 			fakeClient := newClient()
+			pvc := eligiblePVC(fakeClient, "expandable")
+			pvc.Spec.StorageClassName = nil
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(MatchError(resizer.ErrStorageClassNotFound))
 		})
 
 		It("returns ErrStorageClassDoesNotSupportExpansion when the storage class forbids expansion", func() {
-			pvc := eligiblePVC("no-expansion")
 			fakeClient := newClient(storageClass("no-expansion", false))
+			pvc := eligiblePVC(fakeClient, "no-expansion")
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(MatchError(resizer.ErrStorageClassDoesNotSupportExpansion))
 		})
 
 		It("returns ErrVolumeModeIsNotFilesystem for a block volume", func() {
-			pvc := eligiblePVC("expandable")
-			pvc.Spec.VolumeMode = ptr.To(corev1.PersistentVolumeBlock)
 			fakeClient := newClient(storageClass("expandable", true))
+			pvc := eligiblePVC(fakeClient, "expandable")
+			pvc.Spec.VolumeMode = ptr.To(corev1.PersistentVolumeBlock)
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(MatchError(resizer.ErrVolumeModeIsNotFilesystem))
 		})
 
 		It("returns ErrPVCNotBound when the PVC is not bound", func() {
-			pvc := eligiblePVC("expandable")
-			pvc.Status.Phase = corev1.ClaimLost
 			fakeClient := newClient(storageClass("expandable", true))
+			pvc := eligiblePVC(fakeClient, "expandable")
+			pvc.Status.Phase = corev1.ClaimLost
 
 			Expect(resizer.ValidatePVC(ctx, fakeClient, pvc, policy)).To(MatchError(resizer.ErrPVCNotBound))
 		})

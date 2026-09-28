@@ -5,42 +5,32 @@
 package recommender
 
 import (
+	"context"
 	"io"
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
 	"github.com/gardener/pvc-autoscaler/internal/common"
 	"github.com/gardener/pvc-autoscaler/internal/status/conditions"
+	testutils "github.com/gardener/pvc-autoscaler/test/utils"
 )
 
-// makePVC builds an in-memory PVC with the given spec and status storage sizes.
-func makePVC(specSize, statusSize string) *corev1.PersistentVolumeClaim {
-	return &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-pvc", Namespace: "default"},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(specSize)},
-			},
-		},
-		Status: corev1.PersistentVolumeClaimStatus{
-			Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(statusSize)},
-		},
-	}
-}
-
-// makePolicy builds a VolumePolicy with the default scale-up rules and the given max capacity.
-func makePolicy(maxCapacity string) v1alpha1.VolumePolicy {
+// createPolicy builds a VolumePolicy with the default scale-up rules and the given max capacity.
+func createPolicy(maxCapacity string) v1alpha1.VolumePolicy {
 	return v1alpha1.VolumePolicy{
 		MaxCapacity: resource.MustParse(maxCapacity),
 		ScaleUp: ptr.To(v1alpha1.ScalingRules{
@@ -63,11 +53,24 @@ func makeRecommendation(usedSpacePercent, usedInodesPercent int) v1alpha1.Volume
 }
 
 var _ = Describe("Recommender", func() {
+	var (
+		ctx       context.Context
+		k8sClient client.Client
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		scheme := runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
+	})
+
 	Describe("#ScalingReason", func() {
 		DescribeTable("determines whether and why a PVC should be resized",
 			func(specSize, maxCapacity string, usedSpacePercent, usedInodesPercent int, expected string) {
-				pvc := makePVC(specSize, specSize)
-				policy := makePolicy(maxCapacity)
+				pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", specSize, nil, nil)
+				Expect(err).NotTo(HaveOccurred())
+				policy := createPolicy(maxCapacity)
 				volumeRecommendation := makeRecommendation(usedSpacePercent, usedInodesPercent)
 
 				Expect(ScalingReason(pvc, policy, volumeRecommendation)).To(Equal(expected))
@@ -94,8 +97,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("recommends a target size and records the used-space event", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			policy := makePolicy("10Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("10Gi")
 			volumeRecommendation := makeRecommendation(92, 0)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -110,8 +114,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("records the used-inodes event when only inodes exceed the threshold", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			policy := makePolicy("10Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("10Gi")
 			volumeRecommendation := makeRecommendation(0, 91)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -124,8 +129,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("does not recommend when no threshold is reached", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			policy := makePolicy("10Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("10Gi")
 			volumeRecommendation := makeRecommendation(50, 50)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -135,8 +141,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("clamps the target size to the max capacity", func() {
-			pvc := makePVC("2Gi", "2Gi")
-			policy := makePolicy("3Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "2Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("3Gi")
 			volumeRecommendation := makeRecommendation(92, 0)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -147,8 +154,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("does not recommend and records the max-capacity event when at max capacity", func() {
-			pvc := makePVC("3Gi", "3Gi")
-			policy := makePolicy("3Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "3Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("3Gi")
 			volumeRecommendation := makeRecommendation(92, 0)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -159,8 +167,9 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("does not recommend while the cooldown period has not elapsed", func() {
-			pvc := makePVC("1Gi", "1Gi")
-			policy := makePolicy("10Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			policy := createPolicy("10Gi")
 			policy.ScaleUp.CooldownDuration = ptr.To(metav1.Duration{Duration: time.Hour})
 			volumeRecommendation := makeRecommendation(92, 0)
 			volumeRecommendation.LastResizeTime = ptr.To(metav1.Now())
@@ -172,11 +181,12 @@ var _ = Describe("Recommender", func() {
 		})
 
 		It("does not recommend while a resize is already in progress", func() {
-			pvc := makePVC("1Gi", "1Gi")
+			pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
 			pvc.Status.Conditions = []corev1.PersistentVolumeClaimCondition{
 				{Type: corev1.PersistentVolumeClaimResizing, Status: corev1.ConditionTrue},
 			}
-			policy := makePolicy("10Gi")
+			policy := createPolicy("10Gi")
 			volumeRecommendation := makeRecommendation(92, 0)
 
 			recommendation := RecommendResize(logr.Discard(), eventRecorder, pvc, policy, volumeRecommendation, resizingConds)
@@ -197,7 +207,8 @@ var _ = Describe("Recommender", func() {
 				expectInProgress bool,
 				expectedConditionStatus metav1.ConditionStatus,
 			) {
-				pvc := makePVC("1Gi", "1Gi")
+				pvc, err := testutils.CreatePVC(ctx, k8sClient, "test-pvc", "1Gi", nil, nil)
+				Expect(err).NotTo(HaveOccurred())
 				if pvcConditionType != nil {
 					pvc.Status.Conditions = []corev1.PersistentVolumeClaimCondition{
 						{Type: *pvcConditionType, Status: corev1.ConditionTrue},
