@@ -239,78 +239,14 @@ var _ = Describe("Periodic Runner", func() {
 			})
 		})
 
-		Describe("#updateVolumeRecommendationForPVC", func() {
+		Describe("#observeVolumeRecommendation", func() {
 			It("should return ErrNoMetrics when volInfo is nil", func() {
-				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, nil)
+				volumeRecommendation, err := observeVolumeRecommendation(v1alpha1.VolumeRecommendation{Name: pvc.Name}, pvc, nil)
 				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{}))
 				Expect(err).To(MatchError(common.ErrNoMetrics))
 			})
 
-			It("should return ErrStaleMetrics when metrics capacity deviates by more than 0.5Gi (small PVC)", func() {
-				volInfo := &metricssource.VolumeInfo{
-					AvailableBytes:  9 * 1024 * 1024,
-					CapacityBytes:   200 * 1024 * 1024, // delta ~824MiB > 0.5Gi tolerance
-					AvailableInodes: 1000,
-					CapacityInodes:  1000,
-				}
-
-				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
-				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{}))
-				Expect(err).To(MatchError(common.ErrStaleMetrics))
-			})
-
-			It("should apply 4% tolerance for stale metrics detection (large PVC)", func() {
-				By("Patching PVC to 100Gi and PVCA maxCapacity to 200Gi")
-				specPatch := client.MergeFrom(pvc.DeepCopy())
-				pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("100Gi")
-				Expect(k8sClient.Patch(parentCtx, pvc, specPatch)).To(Succeed())
-
-				statusPatch := client.MergeFrom(pvc.DeepCopy())
-				pvc.Status.Capacity[corev1.ResourceStorage] = resource.MustParse("100Gi")
-				Expect(k8sClient.Status().Patch(parentCtx, pvc, statusPatch)).To(Succeed())
-
-				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
-				pvca.Spec.VolumePolicies[0].MaxCapacity = resource.MustParse("200Gi")
-				Expect(k8sClient.Patch(parentCtx, pvca, pvcaPatch)).To(Succeed())
-				waitForPVCACacheSync(parentCtx, pvca)
-
-				By("Calling updateVolumeRecommendationForPVC with metrics deviating by 3Gi")
-				volInfo := &metricssource.VolumeInfo{
-					AvailableBytes:  9 * 1024 * 1024,
-					CapacityBytes:   95 * 1024 * 1024 * 1024, // delta 5Gi > 4% tolerance
-					AvailableInodes: 1000,
-					CapacityInodes:  1000,
-				}
-				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
-				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{}))
-				Expect(err).To(MatchError(common.ErrStaleMetrics))
-
-				By("Calling updateVolumeRecommendationForPVC with metrics deviating by 1Gi")
-				volInfo = &metricssource.VolumeInfo{
-					AvailableBytes:  9 * 1024 * 1024,
-					CapacityBytes:   98 * 1024 * 1024 * 1024, // delta 2Gi < 4% tolerance
-					AvailableInodes: 1000,
-					CapacityInodes:  1000,
-				}
-				usedSpace, _ := volInfo.UsedSpacePercentage()
-				usedInodes, _ := volInfo.UsedInodesPercentage()
-
-				volumeRecommendation, err = runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{
-					Name: pvc.Name,
-					Current: v1alpha1.CurrentVolumeStatus{
-						Size:              pvc.Status.Capacity.Storage(),
-						UsedSpacePercent:  ptr.To(usedSpace),
-						UsedInodesPercent: ptr.To(usedInodes),
-					},
-					Target: v1alpha1.TargetRecommendation{
-						Size: pvc.Spec.Resources.Requests.Storage(),
-					},
-				}))
-			})
-
-			It("should return a recommendation with valid percentage values", func() {
+			It("should record the observed metrics into the recommendation", func() {
 				volInfo := &metricssource.VolumeInfo{
 					AvailableBytes:  9 * 1024 * 1024,
 					CapacityBytes:   1024 * 1024 * 1024,
@@ -320,7 +256,7 @@ var _ = Describe("Periodic Runner", func() {
 				usedSpace, _ := volInfo.UsedSpacePercentage()
 				usedInodes, _ := volInfo.UsedInodesPercentage()
 
-				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
+				volumeRecommendation, err := observeVolumeRecommendation(v1alpha1.VolumeRecommendation{Name: pvc.Name}, pvc, volInfo)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{
 					Name: pvc.Name,
@@ -1249,26 +1185,6 @@ var _ = Describe("Periodic Runner", func() {
 				for _, cond := range updatedPVCA.Status.Conditions {
 					Expect(cond.Type).NotTo(Equal(string(v1alpha1.ConditionTypeResizing)))
 				}
-			})
-
-			It("should sort volume recommendations by name before persisting", func() {
-				recommendations := []v1alpha1.VolumeRecommendation{
-					{Name: "pvc-c"},
-					{Name: "pvc-a"},
-					{Name: "pvc-b"},
-				}
-
-				emptyRec := metav1.Condition{Type: string(v1alpha1.ConditionTypeRecommendationAvailable)}
-				emptyRes := metav1.Condition{Type: string(v1alpha1.ConditionTypeResizing)}
-				Expect(runner.setStatus(parentCtx, pvca, emptyRec, emptyRes, recommendations)).To(Succeed())
-
-				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
-				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
-				names := make([]string, 0, len(updatedPVCA.Status.VolumeRecommendations))
-				for _, vr := range updatedPVCA.Status.VolumeRecommendations {
-					names = append(names, vr.Name)
-				}
-				Expect(names).To(Equal([]string{"pvc-a", "pvc-b", "pvc-c"}))
 			})
 		})
 	})

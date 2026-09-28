@@ -8,8 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +31,7 @@ import (
 	metricssource "github.com/gardener/pvc-autoscaler/internal/metrics/source"
 	"github.com/gardener/pvc-autoscaler/internal/recommender"
 	"github.com/gardener/pvc-autoscaler/internal/resizer"
+	"github.com/gardener/pvc-autoscaler/internal/status"
 	"github.com/gardener/pvc-autoscaler/internal/status/conditions"
 	"github.com/gardener/pvc-autoscaler/internal/target/pvcfetcher"
 	"github.com/gardener/pvc-autoscaler/internal/utils"
@@ -317,21 +316,7 @@ func (r *Runner) reconcilePVCA(
 	resizingConditions := &conditions.ResizingConditionAggregator{}
 	recommendationConditions := &conditions.RecommendationsConditionAggregator{}
 
-	volumeRecommendations := make([]v1alpha1.VolumeRecommendation, 0, len(pvcs))
-	for _, volumeRecommendation := range pvca.Status.VolumeRecommendations {
-		if !slices.ContainsFunc(pvcs, func(pvc *corev1.PersistentVolumeClaim) bool {
-			return pvc.Name == volumeRecommendation.Name
-		}) {
-			continue
-		}
-
-		policy, err := utils.GetVolumePolicy(volumeRecommendation.Name, pvca.Spec.VolumePolicies)
-		if err != nil || policy == nil {
-			continue
-		}
-
-		volumeRecommendations = append(volumeRecommendations, volumeRecommendation)
-	}
+	pvcaStatus := status.New(pvca.Status.VolumeRecommendations, pvcs, pvca.Spec.VolumePolicies)
 
 	for _, pvc := range pvcs {
 		pvcObjKey := client.ObjectKeyFromObject(pvc)
@@ -393,7 +378,8 @@ func (r *Runner) reconcilePVCA(
 			continue
 		}
 
-		volumeRecommendation, err := r.updateVolumeRecommendationForPVC(volumeRecommendations, pvc, metricsData[pvcObjKey])
+		volumeRecommendation := pvcaStatus.GetOrCreate(pvc.Name)
+		volumeRecommendation, err = observeVolumeRecommendation(volumeRecommendation, pvc, metricsData[pvcObjKey])
 		if err != nil {
 			logger.Info("skipping persistentvolumeclaim", "reason", err.Error())
 			metrics.SkippedTotal.WithLabelValues(pvca.Namespace, pvca.Name, err.Error()).Inc()
@@ -415,20 +401,19 @@ func (r *Runner) reconcilePVCA(
 			}
 		}
 
-		setVolumeRecommendationForPVC(&volumeRecommendations, pvc.Name, volumeRecommendation)
+		pvcaStatus.Set(pvc.Name, volumeRecommendation)
 	}
 
-	if err := r.setStatus(ctx, pvca, recommendationConditions.GetAggregatedCondition(), resizingConditions.GetAggregatedCondition(), volumeRecommendations); err != nil {
+	if err := r.setStatus(ctx, pvca, recommendationConditions.GetAggregatedCondition(), resizingConditions.GetAggregatedCondition(), pvcaStatus.Sorted()); err != nil {
 		logger.Error(err, "failed to update PVCA status")
 	}
 }
 
-// updateVolumeRecommendations updates the status of the
-// [v1alpha1.PersistentVolumeClaimAutoscaler] with the latest observed
-// information about the target [corev1.PersistentVolumeClaim].
-func (r *Runner) updateVolumeRecommendationForPVC(volumeRecommendations []v1alpha1.VolumeRecommendation, pvc *corev1.PersistentVolumeClaim, volInfo *metricssource.VolumeInfo) (v1alpha1.VolumeRecommendation, error) {
-	volumeRecommendation := getOrCreateVolumeRecommendationForPVC(volumeRecommendations, pvc.Name)
-
+// observeVolumeRecommendation extracts the observed volume metrics for the
+// [corev1.PersistentVolumeClaim] and records them into the recommendation via
+// [status.Observe]. It returns [common.ErrNoMetrics] when no metrics are
+// available for the PVC yet.
+func observeVolumeRecommendation(volumeRecommendation v1alpha1.VolumeRecommendation, pvc *corev1.PersistentVolumeClaim, volInfo *metricssource.VolumeInfo) (v1alpha1.VolumeRecommendation, error) {
 	// No metrics found, nothing to do for now
 	if volInfo == nil {
 		return v1alpha1.VolumeRecommendation{}, common.ErrNoMetrics
@@ -438,65 +423,13 @@ func (r *Runner) updateVolumeRecommendationForPVC(volumeRecommendations []v1alph
 	if err != nil {
 		return v1alpha1.VolumeRecommendation{}, fmt.Errorf("failed to get used space percentage: %w", err)
 	}
-	volumeRecommendation.Current.UsedSpacePercent = &usedSpace
 
 	usedInodes, err := volInfo.UsedInodesPercentage()
 	if err != nil {
 		return v1alpha1.VolumeRecommendation{}, fmt.Errorf("failed to get used inodes percentage: %w", err)
 	}
-	volumeRecommendation.Current.UsedInodesPercent = &usedInodes
 
-	currStatusSize := pvc.Status.Capacity.Storage()
-	volumeRecommendation.Current.Size = currStatusSize
-
-	// If target size has not yet been recommended by the autoscaler, take the size from spec
-	// so the field is non-nil.
-	if volumeRecommendation.Target.Size == nil {
-		volumeRecommendation.Target.Size = pvc.Spec.Resources.Requests.Storage()
-	}
-
-	// Detect whether the metrics source is reporting stale data. Stale
-	// metrics data would be when the volume info metrics reported by the
-	// metrics source deviate from the current PVC size indicated by
-	// `.status.capacity.storage'
-	if statusSize, ok := currStatusSize.AsInt64(); ok {
-		delta := math.Abs(float64(statusSize) - float64(volInfo.CapacityBytes))
-		tolerance := math.Max(common.MaxCapacityDeviationRatio*float64(statusSize), float64(common.ScalingResolutionBytes)/2)
-		if delta > tolerance {
-			return v1alpha1.VolumeRecommendation{}, fmt.Errorf("stale metrics data detected: pvc size=%d bytes, metrics size=%d bytes: %w", statusSize, volInfo.CapacityBytes, common.ErrStaleMetrics)
-		}
-	}
-
-	return volumeRecommendation, nil
-}
-
-// getOrCreateVolumeRecommendationForPVC returns the [v1alpha1.VolumeRecommendation] for
-// the given [corev1.PersistentVolumeClaim] name. If no recommendation exists yet, a new one is created and returned.
-func getOrCreateVolumeRecommendationForPVC(volumeRecommendations []v1alpha1.VolumeRecommendation, pvcName string) v1alpha1.VolumeRecommendation {
-	for i := range volumeRecommendations {
-		if volumeRecommendations[i].Name == pvcName {
-			return volumeRecommendations[i]
-		}
-	}
-
-	return v1alpha1.VolumeRecommendation{
-		Name: pvcName,
-	}
-}
-
-// setVolumeRecommendationForPVC sets the [v1alpha1.VolumeRecommendation] for the [corev1.PersistentVolumeClaim] in
-// the [v1alpha1.PersistentVolumeClaimAutoscaler]. If it did not exist before, it is appended to the list of volume
-// recommendations.
-func setVolumeRecommendationForPVC(volumeRecommendations *[]v1alpha1.VolumeRecommendation, pvcName string, volumeRecommendation v1alpha1.VolumeRecommendation) {
-	for i := range *volumeRecommendations {
-		if (*volumeRecommendations)[i].Name == pvcName {
-			(*volumeRecommendations)[i] = volumeRecommendation
-
-			return
-		}
-	}
-
-	*volumeRecommendations = append(*volumeRecommendations, volumeRecommendation)
+	return status.Observe(volumeRecommendation, pvc, usedSpace, usedInodes, volInfo.CapacityBytes)
 }
 
 // validatePVC checks whether the [corev1.PersistentVolumeClaim] is valid for
@@ -563,9 +496,6 @@ func (r *Runner) setStatus(ctx context.Context, pvca *v1alpha1.PersistentVolumeC
 
 	pvca.Status.Conditions = conditions
 
-	slices.SortFunc(volumeRecommendations, func(vr1, vr2 v1alpha1.VolumeRecommendation) int {
-		return strings.Compare(vr1.Name, vr2.Name)
-	})
 	pvca.Status.VolumeRecommendations = volumeRecommendations
 
 	if apiequality.Semantic.DeepEqual(original.Status, pvca.Status) {
