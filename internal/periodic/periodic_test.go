@@ -338,42 +338,87 @@ var _ = Describe("Periodic Runner", func() {
 				)))
 			})
 
-			It("should reconcile when threshold has been reached", func() {
-				metricsSource := fake.New(fake.WithInterval(10 * time.Millisecond))
+			It("should resize the PVC when the storage threshold is reached", func() {
+				metricsSource := fake.New(fake.WithInterval(time.Second))
 				fakeItem := &fake.Item{
-					NamespacedName:         client.ObjectKeyFromObject(pvc),
-					CapacityBytes:          1073741824,
-					AvailableBytes:         1073741824,
-					CapacityInodes:         10000,
-					AvailableInodes:        10000,
-					ConsumeBytesIncrement:  1000,
-					ConsumeInodesIncrement: 1000,
+					NamespacedName:  client.ObjectKeyFromObject(pvc),
+					CapacityBytes:   1073741824,
+					AvailableBytes:  10 * 1024 * 1024, // ~99% used, above the 80% threshold
+					CapacityInodes:  10000,
+					AvailableInodes: 10000,
 				}
 				metricsSource.Register(fakeItem)
-
-				newCtx, cancelFunc := context.WithCancel(parentCtx)
-				go func() {
-					ch := time.After(500 * time.Millisecond)
-					<-ch
-					cancelFunc()
-				}()
-				metricsSource.Start(newCtx)
 
 				By("Reconfiguring the periodic runner with the metrics source")
 				withMetricsSourceOpt := WithMetricsSource(metricsSource)
 				withMetricsSourceOpt(runner)
 
-				By("Expecting PVC to be reconciled when threshold is reached")
+				By("Running a reconcile")
 				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 
-				By("Verifying the RecommendationAvailable condition")
+				By("Verifying the PVC was resized to the recommended target size")
+				resizedPVC := &corev1.PersistentVolumeClaim{}
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvc), resizedPVC)).To(Succeed())
+				Expect(resizedPVC.Spec.Resources.Requests.Storage().String()).To(Equal("2Gi"))
+				Expect(resizedPVC.Annotations).To(HaveKeyWithValue(common.AnnotationPreviousSize, "1Gi"))
+
+				By("Verifying the Resizing condition is set to True on the PVCA")
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
+					HaveField("Type", string(v1alpha1.ConditionTypeResizing)),
 					HaveField("Status", metav1.ConditionTrue),
-					HaveField("Reason", conditions.ReasonRecommendationsProvided),
+					HaveField("Message", ContainSubstring("resizing from 1Gi to 2Gi due to "+common.ScalingReasonStorageThreshold)),
 				)))
+			})
+
+			It("should surface a recommendation but not resize when the strategy is Off", func() {
+				By("Patching the PVCA policy to use the Off resize strategy")
+				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
+				pvca.Spec.VolumePolicies[0].ScaleUp.ResizeStrategy = v1alpha1.OffVolumeResizeStrategy
+				Expect(k8sClient.Patch(parentCtx, pvca, pvcaPatch)).To(Succeed())
+				waitForPVCACacheSync(parentCtx, pvca)
+
+				metricsSource := fake.New(fake.WithInterval(time.Second))
+				fakeItem := &fake.Item{
+					NamespacedName:  client.ObjectKeyFromObject(pvc),
+					CapacityBytes:   1073741824,
+					AvailableBytes:  10 * 1024 * 1024, // ~99% used, above the 80% threshold
+					CapacityInodes:  10000,
+					AvailableInodes: 10000,
+				}
+				metricsSource.Register(fakeItem)
+
+				By("Reconfiguring the periodic runner with the metrics source")
+				withMetricsSourceOpt := WithMetricsSource(metricsSource)
+				withMetricsSourceOpt(runner)
+
+				By("Running a reconcile")
+				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
+
+				By("Verifying the PVC spec was left unchanged")
+				unchangedPVC := &corev1.PersistentVolumeClaim{}
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvc), unchangedPVC)).To(Succeed())
+				Expect(unchangedPVC.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"))
+				Expect(unchangedPVC.Annotations).NotTo(HaveKey(common.AnnotationPreviousSize))
+
+				By("Verifying the recommended target size is still surfaced in the PVCA status")
+				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
+				var recommendation *v1alpha1.VolumeRecommendation
+				for i := range updatedPVCA.Status.VolumeRecommendations {
+					if updatedPVCA.Status.VolumeRecommendations[i].Name == pvc.Name {
+						recommendation = &updatedPVCA.Status.VolumeRecommendations[i]
+					}
+				}
+				Expect(recommendation).NotTo(BeNil())
+				Expect(recommendation.Target.Size).NotTo(BeNil())
+				Expect(recommendation.Target.Size.String()).To(Equal("2Gi"))
+
+				By("Verifying no Resizing condition was set on the PVCA")
+				for _, cond := range updatedPVCA.Status.Conditions {
+					Expect(cond.Type).NotTo(Equal(string(v1alpha1.ConditionTypeResizing)))
+				}
 			})
 
 			It("should set RecommendationAvailable condition to false and not enqueue when two PVCAs manage the same PVC", func() {
