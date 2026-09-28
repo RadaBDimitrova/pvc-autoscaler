@@ -33,6 +33,11 @@ type Recommendation struct {
 	// ScalingReason is the reason the resize is being recommended. It is only
 	// meaningful when TargetSize is non-nil.
 	ScalingReason string
+	// ResizeStrategy is the resize strategy of the policy that produced this
+	// recommendation. The resizer honors it when applying the recommendation;
+	// in particular, an [v1alpha1.OffVolumeResizeStrategy] recommendation is
+	// surfaced in the status but never applied to the PVC.
+	ResizeStrategy v1alpha1.VolumeResizeStrategy
 }
 
 // ScalingReason determines whether — and why — the [corev1.PersistentVolumeClaim]
@@ -195,6 +200,7 @@ func RecommendResize(logger logr.Logger, eventRecorder record.EventRecorder, pvc
 		TargetSize:           targetSize,
 		ClampedToMaxCapacity: clampedToMaxCapacity,
 		ScalingReason:        scalingReason,
+		ResizeStrategy:       policy.ScaleUp.ResizeStrategy,
 	}
 }
 

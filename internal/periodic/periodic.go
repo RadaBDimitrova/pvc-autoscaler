@@ -13,13 +13,10 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -45,18 +42,6 @@ const UnknownUtilizationValue = "unknown"
 // metrics source.
 var ErrNoMetricsSource = errors.New("no metrics source provided")
 
-// ErrVolumeModeIsNotFilesystem is an error which is returned if a target PVC
-// for resizing is not using the Filesystem VolumeMode.
-var ErrVolumeModeIsNotFilesystem = errors.New("volume mode is not filesystem")
-
-// ErrStorageClassNotFound is an error which is returned when the storage class
-// for a PVC is not found.
-var ErrStorageClassNotFound = errors.New("no storage class found")
-
-// ErrStorageClassDoesNotSupportExpansion is an error which is returned when an
-// annotated PVC uses a storage class that does not support volume expansion.
-var ErrStorageClassDoesNotSupportExpansion = errors.New("storage class does not support expansion")
-
 // ErrNoClient is an error which is returned when the periodic [Runner] was
 // configured without a Kubernetes API client.
 var ErrNoClient = errors.New("no client provided")
@@ -64,9 +49,6 @@ var ErrNoClient = errors.New("no client provided")
 // ErrNoPVCFetcher is an error which is returned when the periodic [Runner] was
 // configured without a [pvcfetcher.Fetcher].
 var ErrNoPVCFetcher = errors.New("no PersistentVolumeClaim fetcher provided")
-
-// ErrPVCNotBound is returned when the PVC is not in the Bound phase.
-var ErrPVCNotBound = errors.New("PersistentVolumeClaim is not bound")
 
 // Runner is a [sigs.k8s.io/controller-runtime/pkg/manager.Runnable], which
 // processes [v1alpha1.PersistentVolumeClaimAutoscaler] items on a regular basis
@@ -366,7 +348,7 @@ func (r *Runner) reconcilePVCA(
 			continue
 		}
 
-		if err := r.validatePVC(ctx, pvc, *policy); err != nil {
+		if err := resizer.ValidatePVC(ctx, r.client, pvc, *policy); err != nil {
 			logger.Info("skipping persistentvolumeclaim", "reason", err.Error())
 			recommendationConditions.AddCondition(metav1.Condition{
 				Type:    string(v1alpha1.ConditionTypeRecommendationAvailable),
@@ -430,47 +412,6 @@ func observeVolumeRecommendation(volumeRecommendation v1alpha1.VolumeRecommendat
 	}
 
 	return status.Observe(volumeRecommendation, pvc, usedSpace, usedInodes, volInfo.CapacityBytes)
-}
-
-// validatePVC checks whether the [corev1.PersistentVolumeClaim] is valid for
-// reconciliation based on its current state and the associated volume policy.
-func (r *Runner) validatePVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim, policy v1alpha1.VolumePolicy) error {
-	currStatusSize := pvc.Status.Capacity.Storage()
-	if currStatusSize.IsZero() {
-		return fmt.Errorf(".status.capacity.storage is invalid: %s", currStatusSize.String())
-	}
-
-	if policy.MaxCapacity.Value() < currStatusSize.Value() {
-		return fmt.Errorf("max capacity (%s) cannot be less than current size (%s)", policy.MaxCapacity.String(), currStatusSize.String())
-	}
-
-	// We need a StorageClass with expansion support
-	scName := ptr.Deref(pvc.Spec.StorageClassName, "")
-	if scName == "" {
-		return ErrStorageClassNotFound
-	}
-
-	var sc storagev1.StorageClass
-	scKey := types.NamespacedName{Name: scName}
-	if err := r.client.Get(ctx, scKey, &sc); err != nil {
-		return err
-	}
-
-	if !ptr.Deref(sc.AllowVolumeExpansion, false) {
-		return ErrStorageClassDoesNotSupportExpansion
-	}
-
-	// VolumeMode should be Filesystem
-	if pvc.Spec.VolumeMode != nil && *pvc.Spec.VolumeMode != corev1.PersistentVolumeFilesystem {
-		return ErrVolumeModeIsNotFilesystem
-	}
-
-	// The PVC should be bound
-	if pvc.Status.Phase != corev1.ClaimBound {
-		return ErrPVCNotBound
-	}
-
-	return nil
 }
 
 // setStatus updates the status of the [v1alpha1.PersistentVolumeClaimAutoscaler]
