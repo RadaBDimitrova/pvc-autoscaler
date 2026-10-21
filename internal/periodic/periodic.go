@@ -236,6 +236,7 @@ func (r *Runner) reconcileAll(ctx context.Context) error {
 		pvcaList v1alpha1.PersistentVolumeClaimAutoscalerList
 	)
 
+	metrics.PVCAtMaxCapacity.Reset()
 	if err := r.client.List(ctx, &pvcaList, client.MatchingFields{v1alpha1.AutoscalerNameIndexKey: r.autoscalerName}); err != nil {
 		return err
 	}
@@ -430,6 +431,11 @@ func (r *Runner) reconcilePVCA(
 		}
 
 		scalingReason, isAtMaxCapacity := scalingReason(pvc, *policy, volumeRecommendation)
+		maxCapacityValue := 0.0
+		if isAtMaxCapacity {
+			maxCapacityValue = 1
+		}
+		metrics.PVCAtMaxCapacity.WithLabelValues(pvc.Namespace, pvc.Name, pvca.Name).Set(maxCapacityValue)
 		if r.isResizeInProgress(logger, pvc, scalingReason, resizingConditions) {
 			setVolumeRecommendationForPVC(&volumeRecommendations, pvc.Name, volumeRecommendation)
 
