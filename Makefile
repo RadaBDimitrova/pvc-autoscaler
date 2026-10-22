@@ -1,5 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= europe-docker.pkg.dev/gardener-project/releases/gardener/pvc-autoscaler
+# PVC_COPY_IMG is the image URL for the pvc-copy container, which copies data between PVCs.
+PVC_COPY_IMG ?= europe-docker.pkg.dev/gardener-project/releases/gardener/pvc-copy
 
 VERSION := $(shell cat VERSION)
 EFFECTIVE_VERSION ?= $(VERSION)-$(shell git rev-parse --short HEAD)
@@ -188,9 +190,17 @@ run: generate ## Run a controller from your host.
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG}:${IMAGE_TAG} .
 
+.PHONY: docker-build-pvc-copy
+docker-build-pvc-copy: ## Build docker image with the pvc-copy container.
+	$(CONTAINER_TOOL) build -t ${PVC_COPY_IMG}:${IMAGE_TAG} pvc-copy
+
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}:${IMAGE_TAG}
+
+.PHONY: docker-push-pvc-copy
+docker-push-pvc-copy: ## Push docker image with the pvc-copy container.
+	$(CONTAINER_TOOL) push ${PVC_COPY_IMG}:${IMAGE_TAG}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

@@ -67,6 +67,13 @@ const (
 	// offline. It is removed once the PVC gets the FileSystemResizePending condition,
 	// allowing the Pod to be scheduled, re-mount the volume and finish the resize.
 	SchedulingGateOfflineResize = "pvc.autoscaling.gardener.cloud/offline-resize"
+
+	// LabelManagedBy marks resources created by the pvc-autoscaler, e.g. the Jobs
+	// that copy data between PersistentVolumeClaims.
+	LabelManagedBy = "pvc.autoscaling.gardener.cloud/managed-by"
+
+	// LabelManagedByValue is the value set on [LabelManagedBy].
+	LabelManagedByValue = "pvc-autoscaler"
 )
 
 // ScalingReason is a string alias that can be used to represent a scaling reason.
