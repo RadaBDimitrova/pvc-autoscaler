@@ -15,3 +15,4 @@ spec:
         - "--leader-elect"
         - "--interval=30s"
         - "--prometheus-address=http://kind-prometheus-kube-prome-prometheus.monitoring.svc.cluster.local:9090"
+        - --pvc-copy-image=local-skaffold/pvc-copy:dev

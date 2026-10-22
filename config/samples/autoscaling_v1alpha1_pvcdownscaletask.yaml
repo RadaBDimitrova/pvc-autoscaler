@@ -1,0 +1,21 @@
+apiVersion: autoscaling.gardener.cloud/v1alpha1
+kind: PVCDownscaleTask
+metadata:
+  labels:
+    app.kubernetes.io/name: pvc-autoscaler
+    app.kubernetes.io/managed-by: kustomize
+  name: pvcdownscaletask-sample
+spec:
+  # Name of the PersistentVolumeClaim to shrink (in this namespace).
+  pvcName: test-pvc-1
+  # The new, smaller size to shrink the PVC to.
+  targetSize: 1Gi
+  # The workload controller owning the PVC. It is scaled to zero for the duration of the
+  # downscale and restored afterwards.
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: test-sts
+  # WARNING: downscaling is experimental and destructive. The data-copy step is currently a
+  # no-op, so running this task WILL discard the data on the original volume. The downscale
+  # controller only acts on this task when started with --enable-downscaling.

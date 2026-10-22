@@ -31,12 +31,14 @@ import (
 
 	"github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
 	"github.com/gardener/pvc-autoscaler/internal/common"
+	"github.com/gardener/pvc-autoscaler/internal/controller/downscale"
 	"github.com/gardener/pvc-autoscaler/internal/controller/offlineresize"
 	"github.com/gardener/pvc-autoscaler/internal/healthcheck"
 	_ "github.com/gardener/pvc-autoscaler/internal/metrics"
 	"github.com/gardener/pvc-autoscaler/internal/metrics/source"
 	"github.com/gardener/pvc-autoscaler/internal/metrics/source/prometheus"
 	"github.com/gardener/pvc-autoscaler/internal/periodic"
+	"github.com/gardener/pvc-autoscaler/internal/pvc"
 	"github.com/gardener/pvc-autoscaler/internal/target/pvcfetcher"
 	"github.com/gardener/pvc-autoscaler/internal/target/selectorfetcher"
 	podwebhook "github.com/gardener/pvc-autoscaler/internal/webhook/pod"
@@ -68,6 +70,8 @@ func main() {
 	var metricsAvailableInodesQuery string
 	var metricsCapacityInodesQuery string
 	var autoscalerName string
+	var enableDownscaling bool
+	var pvcCopyImage string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -89,6 +93,12 @@ func main() {
 
 	flag.DurationVar(&interval, "interval", 5*time.Minute, "The interval at which to run the periodic check")
 	flag.StringVar(&autoscalerName, "autoscaler-name", "", "Only reconcile PVCAs with this autoscalerName value. An empty value (default) reconciles PVCAs with no autoscalerName set.")
+	flag.BoolVar(&enableDownscaling, "enable-downscaling", false,
+		"Enable the experimental downscale controller, which executes PVCDownscaleTask objects "+
+			"to shrink PVCs. Tasks must be created deliberately (e.g. via kubectl or an external "+
+			"process); nothing is downscaled automatically.")
+	flag.StringVar(&pvcCopyImage, "pvc-copy-image", "europe-docker.pkg.dev/gardener-project/releases/gardener/pvc-copy:latest",
+		"The pvc-copy container image used by the downscale controller to copy data between PVCs.")
 
 	opts := zap.Options{
 		Development: true,
@@ -214,6 +224,43 @@ func main() {
 	if err := offlineResizeReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up offline-resize reconciler with manager", "controller", offlineresize.ControllerName)
 		os.Exit(1)
+	}
+
+	if enableDownscaling {
+		setupLog.Info("downscaling is enabled; this is experimental and destructive (the original volume's data is discarded after the swap)")
+
+		scalesClient, err := newScalesClient(mgr.GetRESTMapper(), mgr.GetConfig())
+		if err != nil {
+			setupLog.Error(err, "unable to create scales client", "controller", downscale.ControllerName)
+			os.Exit(1)
+		}
+
+		copier, err := pvc.NewRsyncCopier(
+			pvc.WithClient(mgr.GetClient()),
+			pvc.WithImage(pvcCopyImage),
+		)
+		if err != nil {
+			setupLog.Error(err, "unable to create data copier", "controller", downscale.ControllerName)
+			os.Exit(1)
+		}
+
+		downscaleReconciler, err := downscale.New(
+			downscale.WithClient(mgr.GetClient()),
+			downscale.WithEventRecorder(mgr.GetEventRecorderFor(downscale.ControllerName)),
+			downscale.WithAutoscalerName(autoscalerName),
+			downscale.WithScaleClient(scalesClient),
+			downscale.WithRESTMapper(mgr.GetRESTMapper()),
+			downscale.WithCopier(copier),
+		)
+		if err != nil {
+			setupLog.Error(err, "unable to create downscale reconciler", "controller", downscale.ControllerName)
+			os.Exit(1)
+		}
+
+		if err := downscaleReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up downscale reconciler with manager", "controller", downscale.ControllerName)
+			os.Exit(1)
+		}
 	}
 
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
