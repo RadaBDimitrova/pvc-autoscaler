@@ -73,3 +73,22 @@ profiles:
       - op: replace
         path: /manifests/kustomize/paths/0
         value: config/overlays/minikube
+---
+apiVersion: skaffold/v4beta12
+kind: Config
+metadata:
+  name: pvc-copy
+build:
+  # Pin the tag to a stable value so the controller can reference the image by a
+  # known name through its --pvc-copy-image flag. Skaffold only rewrites image:
+  # fields in manifests, not container args, so the flag needs a deterministic
+  # reference. This lives in its own module to leave the main image on the default
+  # (unique) tag policy, so its skaffold dev rollouts keep triggering.
+  tagPolicy:
+    envTemplate:
+      template: "{{.IMAGE_NAME}}:dev"
+  artifacts:
+    - image: local-skaffold/pvc-copy
+      context: pvc-copy
+      docker:
+        dockerfile: Dockerfile
