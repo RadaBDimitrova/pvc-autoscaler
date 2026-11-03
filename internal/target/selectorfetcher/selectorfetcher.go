@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -23,16 +24,20 @@ var (
 
 	// ErrNoRESTMapper is returned when the [Fetcher] is configured without a REST mapper.
 	ErrNoRESTMapper = errors.New("no REST mapper provided")
+
+	// ErrNoScaleSubresource is returned when the target does not expose a scale subresource.
+	ErrNoScaleSubresource = errors.New("target does not expose a scale subresource")
 )
 
 // Fetcher is an interface that can be used to fetch the label selector from
 // the scale subresource of an autoscalingv1.CrossVersionObjectReference.
 type Fetcher interface {
-	// Fetch returns the label selector from the scale subresource of the provided
+	// Fetch returns the label selector and the current number of replicas from
+	// the scale subresource of the provided
 	// autoscalingv1.CrossVersionObjectReference in the provided namespace.
 	// If the provided autoscalingv1.CrossVersionObjectReference does not support
-	// a scale subresource, an error is returned.
-	Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, error)
+	// a scale subresource, an error wrapping [ErrNoScaleSubresource] is returned.
+	Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, int32, error)
 }
 
 type selectorFetcher struct {
@@ -75,10 +80,10 @@ func WithRESTMapper(rm apimeta.RESTMapper) Option {
 	}
 }
 
-func (f *selectorFetcher) Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, error) {
+func (f *selectorFetcher) Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, int32, error) {
 	targetGV, err := schema.ParseGroupVersion(targetRef.APIVersion)
 	if err != nil {
-		return nil, fmt.Errorf("invalid API version in target reference: %w", err)
+		return nil, 0, fmt.Errorf("invalid API version in target reference: %w", err)
 	}
 
 	targetGK := schema.GroupKind{
@@ -88,29 +93,32 @@ func (f *selectorFetcher) Fetch(ctx context.Context, namespace string, targetRef
 
 	mappings, err := f.restMapper.RESTMappings(targetGK)
 	if err != nil {
-		return nil, fmt.Errorf("unable to determine resource for scale target reference: %w", err)
+		return nil, 0, fmt.Errorf("unable to determine resource for scale target reference: %w", err)
 	}
 
 	scale, err := f.scaleForResourceMappings(ctx, namespace, targetRef.Name, mappings)
 	if err != nil {
-		return nil, fmt.Errorf("could not get scale subresource for target %s: %w", targetRef.String(), err)
+		return nil, 0, fmt.Errorf("could not get scale subresource for target %s: %w", targetRef.String(), err)
 	}
 
 	labelSelector, err := labels.Parse(scale.Status.Selector)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse label selector for target %s: %w", targetRef.String(), err)
+		return nil, 0, fmt.Errorf("could not parse label selector for target %s: %w", targetRef.String(), err)
 	}
 
-	return labelSelector, nil
+	return labelSelector, scale.Status.Replicas, nil
 }
 
 func (f *selectorFetcher) scaleForResourceMappings(ctx context.Context, namespace, name string, mappings []*apimeta.RESTMapping) (*autoscalingv1.Scale, error) {
+	var (
+		errs          = []error{}
+		isUnsupported = true
+	)
+
 	// make sure we handle an empty set of mappings
 	if len(mappings) == 0 {
-		return nil, errors.New("unrecognized resource")
+		return nil, fmt.Errorf("%w: unrecognized resource", ErrNoScaleSubresource)
 	}
-
-	errs := []error{}
 	for _, mapping := range mappings {
 		targetGR := mapping.Resource.GroupResource()
 		scale, err := f.scaleClient.Scales(namespace).Get(ctx, targetGR, name, metav1.GetOptions{})
@@ -118,7 +126,16 @@ func (f *selectorFetcher) scaleForResourceMappings(ctx context.Context, namespac
 			return scale, nil
 		}
 
+		// A NotFound or MethodNotSupported error on the /scale subresource means
+		// the target resource does not expose a scale subresource.
+		if !apierrors.IsNotFound(err) && !apierrors.IsMethodNotSupported(err) {
+			isUnsupported = false
+		}
 		errs = append(errs, err)
+	}
+
+	if isUnsupported {
+		return nil, fmt.Errorf("%w: %w", ErrNoScaleSubresource, errors.Join(errs...))
 	}
 
 	return nil, errors.Join(errs...)

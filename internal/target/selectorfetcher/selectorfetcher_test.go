@@ -6,11 +6,13 @@ package selectorfetcher_test
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,7 +96,7 @@ var _ = Describe("SelectorFetcher", func() {
 			})
 
 			It("should return an error because REST mapper cannot find resource mappings", func() {
-				_, err := selectorFetcher.Fetch(ctx, "default", targetRef)
+				_, _, err := selectorFetcher.Fetch(ctx, "default", targetRef)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("unable to determine resource"))
 			})
@@ -108,15 +110,16 @@ var _ = Describe("SelectorFetcher", func() {
 					APIVersion: "apps/v1",
 				}
 
-				_, err := selectorFetcher.Fetch(ctx, "default", targetRef)
+				_, _, err := selectorFetcher.Fetch(ctx, "default", targetRef)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("unable to determine resource"))
 			})
 
-			It("should return a label selector when scale subresource is found", func() {
+			It("should return a label selector and replicas when scale subresource is found", func() {
 				scale := &autoscalingv1.Scale{
 					Status: autoscalingv1.ScaleStatus{
 						Selector: "app=test,version=v1",
+						Replicas: 3,
 					},
 				}
 
@@ -124,13 +127,24 @@ var _ = Describe("SelectorFetcher", func() {
 					return true, scale, nil
 				})
 
-				selector, err := selectorFetcher.Fetch(ctx, "default", targetRef)
+				selector, replicas, err := selectorFetcher.Fetch(ctx, "default", targetRef)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(selector).ToNot(BeNil())
+				Expect(replicas).To(Equal(int32(3)))
 				Expect(selector.Matches(labels.Set{
 					"app":     "test",
 					"version": "v1",
 				})).To(BeTrue())
+			})
+
+			It("should return ErrNoScaleSubresource when the scale subresource is not found", func() {
+				scaleClient.AddReactor("get", "statefulsets/scale", func(action k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "statefulsets"}, "test-sts")
+				})
+
+				_, _, err := selectorFetcher.Fetch(ctx, "default", targetRef)
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, selectorfetcher.ErrNoScaleSubresource)).To(BeTrue())
 			})
 
 			It("should return an error when scale selector is invalid", func() {
@@ -144,7 +158,7 @@ var _ = Describe("SelectorFetcher", func() {
 					return true, scale, nil
 				})
 
-				_, err := selectorFetcher.Fetch(ctx, "default", targetRef)
+				_, _, err := selectorFetcher.Fetch(ctx, "default", targetRef)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("could not parse label selector"))
 			})

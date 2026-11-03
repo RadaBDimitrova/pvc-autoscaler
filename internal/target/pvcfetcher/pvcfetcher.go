@@ -29,6 +29,11 @@ var (
 
 	// ErrNoPVCsFound is returned when pods are found but none of them have PVC volumes.
 	ErrNoPVCsFound = errors.New("matched pods do not reference any PersistentVolumeClaims")
+
+	// ErrTargetScaledToZero is returned when no pods match the target's selector
+	// because the target workload is scaled to zero replicas. The absence of
+	// PersistentVolumeClaims is then expected rather than a problem.
+	ErrTargetScaledToZero = errors.New("target workload is scaled to zero")
 )
 
 // Fetcher is an interface that can be used to fetch all PersistentVolumeClaims
@@ -94,7 +99,7 @@ func (f *pvcFetcher) Fetch(ctx context.Context, pvca *v1alpha1.PersistentVolumeC
 		return []*corev1.PersistentVolumeClaim{pvc}, nil
 	}
 
-	selector, err := f.selectorFetcher.Fetch(ctx, pvca.Namespace, pvca.Spec.TargetRef)
+	selector, replicas, err := f.selectorFetcher.Fetch(ctx, pvca.Namespace, pvca.Spec.TargetRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch selector for target %s: %w", pvca.Spec.TargetRef.String(), err)
 	}
@@ -105,6 +110,12 @@ func (f *pvcFetcher) Fetch(ctx context.Context, pvca *v1alpha1.PersistentVolumeC
 	}
 
 	if len(podList.Items) == 0 {
+		// No pods means the target workload is scaled to zero, which is an
+		// expected state - not a problem.
+		if replicas == 0 {
+			return nil, ErrTargetScaledToZero
+		}
+
 		return nil, ErrNoPodsFound
 	}
 
