@@ -5,11 +5,16 @@
 package periodic
 
 import (
+	"errors"
+	"fmt"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gardener/pvc-autoscaler/api/autoscaling/v1alpha1"
+	"github.com/gardener/pvc-autoscaler/internal/target/pvcfetcher"
+	"github.com/gardener/pvc-autoscaler/internal/target/selectorfetcher"
 )
 
 var _ = Describe("recommendationsConditionAggregator", func() {
@@ -188,5 +193,60 @@ var _ = Describe("resizingConditionAggregator", func() {
 
 		got := aggregator.getAggregatedCondition()
 		Expect(got.Message).To(Equal("PersistentVolumeClaims are being resized:\n- pvc-a: resizing\n- pvc-b: resizing\n- pvc-c: resizing"))
+	})
+})
+
+var _ = Describe("fetchErrorConditions", func() {
+	It("should report NoPVCsMatched and drop RecommendationAvailable when no PVCs match and the target has replicas", func() {
+		got := fetchErrorConditions(pvcfetcher.ErrNoPodsFound)
+
+		Expect(got.recommendationAvailable).To(Equal(emptyRecommendationCondition()))
+		Expect(got.noPVCsMatched).To(And(
+			HaveField("Type", string(v1alpha1.ConditionTypeNoPVCsMatched)),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", ReasonNoPVCsMatched),
+			HaveField("Message", Not(BeEmpty())),
+		))
+		Expect(got.configUnsupported).To(And(
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", ReasonConfigSupported),
+		))
+		Expect(got.resizing).To(Equal(emptyResizingCondition()))
+	})
+
+	It("should drop RecommendationAvailable and NoPVCsMatched when the target is scaled to zero", func() {
+		got := fetchErrorConditions(pvcfetcher.ErrTargetScaledToZero)
+
+		Expect(got.recommendationAvailable).To(Equal(emptyRecommendationCondition()))
+		Expect(got.noPVCsMatched).To(And(
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", ReasonPVCsMatched),
+		))
+		Expect(got.configUnsupported).To(HaveField("Status", metav1.ConditionFalse))
+	})
+
+	It("should report ConfigUnsupported and drop RecommendationAvailable when the target has no scale subresource", func() {
+		got := fetchErrorConditions(fmt.Errorf("failed to fetch selector: %w", selectorfetcher.ErrNoScaleSubresource))
+
+		Expect(got.recommendationAvailable).To(Equal(emptyRecommendationCondition()))
+		Expect(got.configUnsupported).To(And(
+			HaveField("Type", string(v1alpha1.ConditionTypeConfigUnsupported)),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", ReasonNoScaleSubresource),
+			HaveField("Message", Not(BeEmpty())),
+		))
+		Expect(got.noPVCsMatched).To(HaveField("Status", metav1.ConditionFalse))
+	})
+
+	It("should report a generic fetch error via RecommendationAvailable only", func() {
+		got := fetchErrorConditions(errors.New("boom"))
+
+		Expect(got.recommendationAvailable).To(And(
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", ReasonPVCFetchError),
+			HaveField("Message", Not(BeEmpty())),
+		))
+		Expect(got.noPVCsMatched).To(HaveField("Status", metav1.ConditionFalse))
+		Expect(got.configUnsupported).To(HaveField("Status", metav1.ConditionFalse))
 	})
 })

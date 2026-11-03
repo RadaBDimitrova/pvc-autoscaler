@@ -911,7 +911,7 @@ var _ = Describe("Periodic Runner", func() {
 				)))
 			})
 
-			It("should set RecommendationAvailable condition to false and not enqueue when two PVCAs manage the same PVC", func() {
+			It("should set ConfigUnsupported condition to true and not enqueue when two PVCAs manage the same PVC", func() {
 				By("Creating PVCA that points to a PVC already managed by a different PVCA")
 				conflictingPVCA := createPVCA(parentCtx, "pvca-with-conflict", "", pvca.Spec.TargetRef, pvca.Spec.VolumePolicies)
 				DeferCleanup(func() {
@@ -924,19 +924,19 @@ var _ = Describe("Periodic Runner", func() {
 
 				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 
-				By("Verifying the RecommendationAvailable conditions for both PVCAs")
+				By("Verifying the ConfigUnsupported conditions for both PVCAs")
 				for _, pvca := range []*v1alpha1.PersistentVolumeClaimAutoscaler{pvca, conflictingPVCA} {
 					updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 					Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed(), "should successfully fetch pvca "+client.ObjectKeyFromObject(pvca).String())
 					Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-						HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
-						HaveField("Status", metav1.ConditionFalse),
+						HaveField("Type", string(v1alpha1.ConditionTypeConfigUnsupported)),
+						HaveField("Status", metav1.ConditionTrue),
 						HaveField("Reason", ReasonAmbiguousPVCA),
 					)), client.ObjectKeyFromObject(pvca).String()+" pvca should have expected condition")
 				}
 			})
 
-			It("should set RecommendationAvailable condition to true when conflict is resolved", func() {
+			It("should clear the ConfigUnsupported condition when the conflict is resolved", func() {
 				By("Creating PVCA that points to a PVC already managed by a different PVCA")
 				conflictingPVCA := createPVCA(parentCtx, "pvca-with-conflict", "", pvca.Spec.TargetRef, pvca.Spec.VolumePolicies)
 				DeferCleanup(func() {
@@ -949,12 +949,12 @@ var _ = Describe("Periodic Runner", func() {
 
 				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 
-				By("Verifying pvca's RecommendationAvailable condition has AmbiguousPersistentVolumeClaimAutoscaler reason")
+				By("Verifying pvca's ConfigUnsupported condition has AmbiguousPersistentVolumeClaimAutoscaler reason")
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
-					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Type", string(v1alpha1.ConditionTypeConfigUnsupported)),
+					HaveField("Status", metav1.ConditionTrue),
 					HaveField("Reason", ReasonAmbiguousPVCA),
 				)))
 
@@ -966,10 +966,11 @@ var _ = Describe("Periodic Runner", func() {
 
 				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
 
-				By("Verifying the RecommendationAvailable condition no longer has AmbiguousPersistentVolumeClaimAutoscaler reason")
+				By("Verifying the ConfigUnsupported condition is no longer true")
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
+					HaveField("Type", string(v1alpha1.ConditionTypeConfigUnsupported)),
+					HaveField("Status", metav1.ConditionFalse),
 					HaveField("Reason", Not(Equal(ReasonAmbiguousPVCA))),
 				)))
 			})
@@ -1029,8 +1030,8 @@ var _ = Describe("Periodic Runner", func() {
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
 					HaveField("Type", string(v1alpha1.ConditionTypeResizing)),
 					HaveField("Status", metav1.ConditionUnknown),
-					HaveField("Reason", ReasonPVCFetchError),
-					HaveField("Message", ContainSubstring("Resizing state is unknown: Failed to fetch PersistentVolumeClaims for PersistentVolumeClaimAutoscaler")),
+					HaveField("Reason", ReasonReconcile),
+					HaveField("Message", Equal("Resizing state is unknown: PersistentVolumeClaims could not be fetched")),
 				)))
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
 					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
@@ -1262,6 +1263,10 @@ var _ = Describe("Periodic Runner", func() {
 					Expect(testutils.CleanupObject(parentCtx, k8sClient, deployment)).To(Succeed())
 				})
 
+				By("Marking the Deployment as having running replicas via its scale subresource")
+				deployment.Status.Replicas = 2
+				Expect(k8sClient.Status().Update(parentCtx, deployment)).To(Succeed())
+
 				By("Patching the PVCA to target the Deployment")
 				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
 				pvca.Spec.TargetRef = autoscalingv1.CrossVersionObjectReference{
@@ -1277,10 +1282,52 @@ var _ = Describe("Periodic Runner", func() {
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
-					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Type", string(v1alpha1.ConditionTypeNoPVCsMatched)),
+					HaveField("Status", metav1.ConditionTrue),
 					HaveField("Reason", ReasonNoPVCsMatched),
-					HaveField("Message", "No PersistentVolumeClaims found for PersistentVolumeClaimAutoscaler: no matching pods found for PersistentVolumeClaimAutoscaler"),
+				)))
+			})
+
+			It("should not set NoPVCsMatched when the target workload is scaled to zero", func() {
+				selectorLabels := map[string]string{"app": "scaled-to-zero"}
+
+				By("Creating a Deployment scaled to zero (no running replicas)")
+				deployment := &appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{Name: "deployment-scaled-to-zero", Namespace: "default"},
+					Spec: appsv1.DeploymentSpec{
+						Replicas: ptr.To(int32(0)),
+						Selector: &metav1.LabelSelector{MatchLabels: selectorLabels},
+						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: selectorLabels},
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "main", Image: "busybox"}},
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(parentCtx, deployment)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(testutils.CleanupObject(parentCtx, k8sClient, deployment)).To(Succeed())
+				})
+
+				By("Patching the PVCA to target the Deployment")
+				pvcaPatch := client.MergeFrom(pvca.DeepCopy())
+				pvca.Spec.TargetRef = autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deployment.Name,
+				}
+				Expect(k8sClient.Patch(parentCtx, pvca, pvcaPatch)).To(Succeed())
+				waitForPVCACacheSync(parentCtx, pvca)
+
+				Expect(runner.reconcileAll(parentCtx)).To(Succeed())
+
+				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
+				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
+				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
+					HaveField("Type", string(v1alpha1.ConditionTypeNoPVCsMatched)),
+					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Reason", ReasonPVCsMatched),
 				)))
 			})
 
@@ -1305,6 +1352,10 @@ var _ = Describe("Periodic Runner", func() {
 				DeferCleanup(func() {
 					Expect(testutils.CleanupObject(parentCtx, k8sClient, deployment)).To(Succeed())
 				})
+
+				By("Marking the Deployment as having running replicas via its scale subresource")
+				deployment.Status.Replicas = 1
+				Expect(k8sClient.Status().Update(parentCtx, deployment)).To(Succeed())
 
 				By("Creating a Pod matching the selector but with no PVC volumes")
 				pod := &corev1.Pod{
@@ -1337,10 +1388,9 @@ var _ = Describe("Periodic Runner", func() {
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
-					HaveField("Status", metav1.ConditionFalse),
+					HaveField("Type", string(v1alpha1.ConditionTypeNoPVCsMatched)),
+					HaveField("Status", metav1.ConditionTrue),
 					HaveField("Reason", ReasonNoPVCsMatched),
-					HaveField("Message", "No PersistentVolumeClaims found for PersistentVolumeClaimAutoscaler: matched pods do not reference any PersistentVolumeClaims"),
 				)))
 			})
 
@@ -1406,9 +1456,9 @@ var _ = Describe("Periodic Runner", func() {
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
 				Expect(updatedPVCA.Status.Conditions).To(ContainElement(And(
-					HaveField("Type", string(v1alpha1.ConditionTypeRecommendationAvailable)),
-					HaveField("Status", metav1.ConditionFalse),
-					HaveField("Reason", ReasonPVCFetchError),
+					HaveField("Type", string(v1alpha1.ConditionTypeConfigUnsupported)),
+					HaveField("Status", metav1.ConditionTrue),
+					HaveField("Reason", ReasonNoScaleSubresource),
 				)))
 			})
 
@@ -1970,7 +2020,7 @@ var _ = Describe("Periodic Runner", func() {
 				})
 
 				emptyRes := metav1.Condition{Type: string(v1alpha1.ConditionTypeResizing)}
-				Expect(runner.setStatus(parentCtx, pvca, recAgg.getAggregatedCondition(), emptyRes, nil)).To(Succeed())
+				Expect(runner.setStatus(parentCtx, pvca, nil, recAgg.getAggregatedCondition(), emptyRes)).To(Succeed())
 
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
@@ -1992,7 +2042,7 @@ var _ = Describe("Periodic Runner", func() {
 				})
 
 				emptyRec := metav1.Condition{Type: string(v1alpha1.ConditionTypeRecommendationAvailable)}
-				Expect(runner.setStatus(parentCtx, pvca, emptyRec, resAgg.getAggregatedCondition(), nil)).To(Succeed())
+				Expect(runner.setStatus(parentCtx, pvca, nil, emptyRec, resAgg.getAggregatedCondition())).To(Succeed())
 
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
@@ -2020,7 +2070,7 @@ var _ = Describe("Periodic Runner", func() {
 
 				emptyRec := metav1.Condition{Type: string(v1alpha1.ConditionTypeRecommendationAvailable)}
 				emptyRes := metav1.Condition{Type: string(v1alpha1.ConditionTypeResizing)}
-				Expect(runner.setStatus(parentCtx, pvca, emptyRec, emptyRes, nil)).To(Succeed())
+				Expect(runner.setStatus(parentCtx, pvca, nil, emptyRec, emptyRes)).To(Succeed())
 
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())
@@ -2038,7 +2088,7 @@ var _ = Describe("Periodic Runner", func() {
 
 				emptyRec := metav1.Condition{Type: string(v1alpha1.ConditionTypeRecommendationAvailable)}
 				emptyRes := metav1.Condition{Type: string(v1alpha1.ConditionTypeResizing)}
-				Expect(runner.setStatus(parentCtx, pvca, emptyRec, emptyRes, recommendations)).To(Succeed())
+				Expect(runner.setStatus(parentCtx, pvca, recommendations, emptyRec, emptyRes)).To(Succeed())
 
 				updatedPVCA := &v1alpha1.PersistentVolumeClaimAutoscaler{}
 				Expect(k8sClient.Get(parentCtx, client.ObjectKeyFromObject(pvca), updatedPVCA)).To(Succeed())

@@ -69,7 +69,8 @@ var ErrNoPVCFetcher = errors.New("no PersistentVolumeClaim fetcher provided")
 // ErrPVCNotBound is returned when the PVC is not in the Bound phase.
 var ErrPVCNotBound = errors.New("PersistentVolumeClaim is not bound")
 
-// Condition reasons for the RecommendationAvailable condition
+// Condition reasons for the RecommendationAvailable, NoPVCsMatched and
+// ConfigUnsupported conditions.
 const (
 	// ReasonMetricsFetched indicates that metrics were successfully fetched and computed.
 	ReasonMetricsFetched = "MetricsFetched"
@@ -79,8 +80,14 @@ const (
 	ReasonPVCFetchError = "PersistentVolumeClaimFetchError"
 	// ReasonNoPVCsMatched indicates that either no pods were found or none of the matched pods had PVC volumes matching the policy.
 	ReasonNoPVCsMatched = "NoPersistentVolumeClaimsMatched"
+	// ReasonPVCsMatched indicates that PersistentVolumeClaims were matched for the PVCA, or that the target workload is scaled to zero.
+	ReasonPVCsMatched = "PersistentVolumeClaimsMatched"
 	// ReasonAmbiguousPVCA indicates that a PVC is autoscaled by multiple PVCAs.
 	ReasonAmbiguousPVCA = "AmbiguousPersistentVolumeClaimAutoscaler"
+	// ReasonNoScaleSubresource indicates that the target of the PVCA does not expose a scale subresource.
+	ReasonNoScaleSubresource = "NoScaleSubresource"
+	// ReasonConfigSupported indicates that the PVCA configuration is supported and unambiguous.
+	ReasonConfigSupported = "ConfigurationSupported"
 	// ReasonRecommendationError indicates an error occurred during recommendation computation.
 	ReasonRecommendationError = "RecommendationError"
 	// ReasonRecommendationsProvided indicates that all recommendations have been computed and added to the status.
@@ -296,35 +303,16 @@ func (r *Runner) fetchPVCsForPVCAs(ctx context.Context, logger logr.Logger, pers
 
 		persistentVolumeClaims, err := r.pvcFetcher.Fetch(ctx, &pvca)
 		if err != nil {
-			reason := ReasonPVCFetchError
-			message := fmt.Sprintf("Failed to fetch PersistentVolumeClaims for PersistentVolumeClaimAutoscaler: %s", err.Error())
-
-			if errors.Is(err, pvcfetcher.ErrNoPodsFound) || errors.Is(err, pvcfetcher.ErrNoPVCsFound) {
-				logger.V(2).Info("no persistentvolumeclaims found for persistentvolumeclaimautoscaler", "pvca", pvcaKey, "reason", err.Error())
-				reason = ReasonNoPVCsMatched
-				message = fmt.Sprintf("No PersistentVolumeClaims found for PersistentVolumeClaimAutoscaler: %s", err.Error())
-			} else {
+			conditions := fetchErrorConditions(err)
+			// The fetch failure means we can no longer determine the resize state.
+			conditions.resizing = unknownResizingCondition(pvca.Status.Conditions)
+			if conditions.recommendationAvailable.Status == metav1.ConditionFalse || conditions.configUnsupported.Status == metav1.ConditionTrue {
 				logger.Error(err, "failed to fetch persistentvolumeclaims for persistentvolumeclaimautoscaler", "pvca", pvcaKey)
+			} else {
+				logger.V(2).Info("could not fetch persistentvolumeclaims for persistentvolumeclaimautoscaler", "pvca", pvcaKey, "reason", err.Error())
 			}
 
-			recommendationsCondition := metav1.Condition{
-				Type:    string(v1alpha1.ConditionTypeRecommendationAvailable),
-				Status:  metav1.ConditionFalse,
-				Reason:  reason,
-				Message: message,
-			}
-
-			resizingCondition := metav1.Condition{Type: string(v1alpha1.ConditionTypeResizing)}
-			if existing := meta.FindStatusCondition(pvca.Status.Conditions, resizingCondition.Type); existing != nil {
-				resizingCondition = metav1.Condition{
-					Type:    string(v1alpha1.ConditionTypeResizing),
-					Status:  metav1.ConditionUnknown,
-					Reason:  reason,
-					Message: fmt.Sprintf("Resizing state is unknown: %s", message),
-				}
-			}
-
-			if err := r.setStatus(ctx, &pvca, recommendationsCondition, resizingCondition, []v1alpha1.VolumeRecommendation{}); err != nil {
+			if err := r.setStatus(ctx, &pvca, []v1alpha1.VolumeRecommendation{}, conditions.list()...); err != nil {
 				logger.Error(err, "failed to update PVCA status", "pvca", pvcaKey)
 			}
 
@@ -356,6 +344,7 @@ func (r *Runner) reconcilePVCA(
 
 	resizingConditions := &resizingConditionAggregator{}
 	recommendationConditions := &recommendationsConditionAggregator{}
+	var configUnsupportedMessages []string
 
 	volumeRecommendations := make([]v1alpha1.VolumeRecommendation, 0, len(pvcs))
 	for _, volumeRecommendation := range pvca.Status.VolumeRecommendations {
@@ -379,12 +368,7 @@ func (r *Runner) reconcilePVCA(
 
 		if owners, ok := pvcToOwnersMap[pvcObjKey.String()]; ok && len(owners) > 1 {
 			logger.Info("skipping persistentvolumeclaim because it is scaled by multiple persistentvolumeclaimautoscalers", "pvcas", strings.Join(owners, ", "))
-			recommendationConditions.addCondition(metav1.Condition{
-				Type:    string(v1alpha1.ConditionTypeRecommendationAvailable),
-				Status:  metav1.ConditionFalse,
-				Reason:  ReasonAmbiguousPVCA,
-				Message: fmt.Sprintf("PersistentVolumeClaim %s is scaled by multiple PersistentVolumeClaimAutoscalers: %s", pvcObjKey, strings.Join(owners, ", ")),
-			})
+			configUnsupportedMessages = append(configUnsupportedMessages, fmt.Sprintf("PersistentVolumeClaim %s is scaled by multiple PersistentVolumeClaimAutoscalers: %s", pvcObjKey, strings.Join(owners, ", ")))
 
 			continue
 		}
@@ -507,7 +491,15 @@ func (r *Runner) reconcilePVCA(
 		setVolumeRecommendationForPVC(&volumeRecommendations, pvc.Name, volumeRecommendation)
 	}
 
-	if err := r.setStatus(ctx, pvca, recommendationConditions.getAggregatedCondition(), resizingConditions.getAggregatedCondition(), volumeRecommendations); err != nil {
+	conditions := newStatusConditions()
+	conditions.recommendationAvailable = recommendationConditions.getAggregatedCondition()
+	conditions.resizing = resizingConditions.getAggregatedCondition()
+	if len(configUnsupportedMessages) > 0 {
+		slices.Sort(configUnsupportedMessages)
+		conditions.configUnsupported = configUnsupportedProblemCondition(ReasonAmbiguousPVCA, strings.Join(configUnsupportedMessages, "; "))
+	}
+
+	if err := r.setStatus(ctx, pvca, volumeRecommendations, conditions.list()...); err != nil {
 		logger.Error(err, "failed to update PVCA status")
 	}
 }
@@ -836,24 +828,24 @@ func (r *Runner) resizePVC(ctx context.Context, logger logr.Logger, pvc *corev1.
 // with the given conditions and the latest volume recommendations. For each
 // condition, an empty Message is treated as a sentinel value: the condition is
 // removed from the status by Type rather than set. The status is only patched
-// if the recommendations, resizing conditions, or current stats have changed
-// compared to the existing status.
-func (r *Runner) setStatus(ctx context.Context, pvca *v1alpha1.PersistentVolumeClaimAutoscaler, recommendationsCondition metav1.Condition, resizingCondition metav1.Condition, volumeRecommendations []v1alpha1.VolumeRecommendation) error {
+// if the recommendations, conditions, or current stats have changed compared to
+// the existing status.
+func (r *Runner) setStatus(ctx context.Context, pvca *v1alpha1.PersistentVolumeClaimAutoscaler, volumeRecommendations []v1alpha1.VolumeRecommendation, conditions ...metav1.Condition) error {
 	original := pvca.DeepCopy()
-	conditions := pvca.Status.Conditions
-	if len(conditions) == 0 {
-		conditions = make([]metav1.Condition, 0)
+	statusConditions := pvca.Status.Conditions
+	if len(statusConditions) == 0 {
+		statusConditions = make([]metav1.Condition, 0)
 	}
 
-	for _, condition := range []metav1.Condition{resizingCondition, recommendationsCondition} {
+	for _, condition := range conditions {
 		if condition.Message == "" {
-			meta.RemoveStatusCondition(&conditions, condition.Type)
+			meta.RemoveStatusCondition(&statusConditions, condition.Type)
 		} else {
-			meta.SetStatusCondition(&conditions, condition)
+			meta.SetStatusCondition(&statusConditions, condition)
 		}
 	}
 
-	pvca.Status.Conditions = conditions
+	pvca.Status.Conditions = statusConditions
 
 	slices.SortFunc(volumeRecommendations, func(vr1, vr2 v1alpha1.VolumeRecommendation) int {
 		return strings.Compare(vr1.Name, vr2.Name)

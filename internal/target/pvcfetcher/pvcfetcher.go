@@ -31,8 +31,7 @@ var (
 	ErrNoPVCsFound = errors.New("matched pods do not reference any PersistentVolumeClaims")
 
 	// ErrTargetScaledToZero is returned when no pods match the target's selector
-	// because the target workload is scaled to zero replicas. The absence of
-	// PersistentVolumeClaims is then expected rather than a problem.
+	// because the target workload is scaled to zero replicas.
 	ErrTargetScaledToZero = errors.New("target workload is scaled to zero")
 )
 
@@ -110,8 +109,6 @@ func (f *pvcFetcher) Fetch(ctx context.Context, pvca *v1alpha1.PersistentVolumeC
 	}
 
 	if len(podList.Items) == 0 {
-		// No pods means the target workload is scaled to zero, which is an
-		// expected state - not a problem.
 		if replicas == 0 {
 			return nil, ErrTargetScaledToZero
 		}
