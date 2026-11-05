@@ -150,6 +150,8 @@ func (f *Fake) Get(ctx context.Context) (metricssource.Metrics, error) {
 			CapacityBytes:   item.CapacityBytes,
 			AvailableInodes: item.AvailableInodes,
 			CapacityInodes:  item.CapacityInodes,
+			UsedBytes:       item.CapacityBytes - item.AvailableBytes,
+			UsedInodes:      item.CapacityInodes - item.AvailableInodes,
 		}
 		result[item.NamespacedName] = volInfo
 	}

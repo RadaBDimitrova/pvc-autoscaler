@@ -67,6 +67,8 @@ func main() {
 	var metricsCapacityBytesQuery string
 	var metricsAvailableInodesQuery string
 	var metricsCapacityInodesQuery string
+	var metricsUsedBytesQuery string
+	var metricsUsedInodesQuery string
 	var autoscalerName string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -76,6 +78,8 @@ func main() {
 	flag.StringVar(&metricsCapacityBytesQuery, "metrics-capacity-bytes-query", source.KubeletVolumeStatsCapacityBytes, "The Prometheus query for capacity bytes metric")
 	flag.StringVar(&metricsAvailableInodesQuery, "metrics-available-inodes-query", source.KubeletVolumeStatsInodesFree, "The Prometheus query for available inodes metric")
 	flag.StringVar(&metricsCapacityInodesQuery, "metrics-capacity-inodes-query", source.KubeletVolumeStatsInodes, "The Prometheus query for capacity inodes metric")
+	flag.StringVar(&metricsUsedBytesQuery, "metrics-used-bytes-query", source.KubeletVolumeStatsUsedBytes, "The Prometheus query for used bytes metric")
+	flag.StringVar(&metricsUsedInodesQuery, "metrics-used-inodes-query", source.KubeletVolumeStatsInodesUsed, "The Prometheus query for used inodes metric")
 
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -164,6 +168,8 @@ func main() {
 		prometheus.WithCapacityBytesQuery(metricsCapacityBytesQuery),
 		prometheus.WithAvailableInodesQuery(metricsAvailableInodesQuery),
 		prometheus.WithCapacityInodesQuery(metricsCapacityInodesQuery),
+		prometheus.WithUsedBytesQuery(metricsUsedBytesQuery),
+		prometheus.WithUsedInodesQuery(metricsUsedInodesQuery),
 	}
 
 	metricsSource, err := prometheus.New(prometheusOpts...)

@@ -17,13 +17,16 @@ var _ = Describe("Source", func() {
 			tests := []struct {
 				capacity           int
 				available          int
+				used               int
 				wantFreePercentage int
 				wantUsedPercentage int
 			}{
-				{capacity: 1000, available: 100, wantFreePercentage: 10, wantUsedPercentage: 90},
-				{capacity: 1000, available: 200, wantFreePercentage: 20, wantUsedPercentage: 80},
-				{capacity: 1000, available: 500, wantFreePercentage: 50, wantUsedPercentage: 50},
-				{capacity: 1000, available: 0, wantFreePercentage: 0, wantUsedPercentage: 100},
+				{capacity: 1000, available: 100, used: 900, wantFreePercentage: 10, wantUsedPercentage: 90},
+				{capacity: 1000, available: 500, used: 500, wantFreePercentage: 50, wantUsedPercentage: 50},
+				{capacity: 1000, available: 0, used: 1000, wantFreePercentage: 0, wantUsedPercentage: 100},
+				{capacity: 1000, available: 200, used: 750, wantFreePercentage: 20, wantUsedPercentage: 75},
+				{capacity: 1000, available: 0, used: 995, wantFreePercentage: 0, wantUsedPercentage: 99},
+				{capacity: 3, available: 1, used: 2, wantFreePercentage: 33, wantUsedPercentage: 66},
 			}
 			for _, test := range tests {
 				// Space
@@ -32,6 +35,8 @@ var _ = Describe("Source", func() {
 					AvailableBytes:  test.available,
 					CapacityInodes:  test.capacity,
 					AvailableInodes: test.available,
+					UsedBytes:       test.used,
+					UsedInodes:      test.used,
 				}
 				freeSpace, err := vol.FreeSpacePercentage()
 				Expect(err).NotTo(HaveOccurred())

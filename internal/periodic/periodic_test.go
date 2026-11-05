@@ -254,9 +254,11 @@ var _ = Describe("Periodic Runner", func() {
 			It("should return ErrStaleMetrics when metrics capacity deviates by more than 0.5Gi (small PVC)", func() {
 				volInfo := &metricssource.VolumeInfo{
 					AvailableBytes:  9 * 1024 * 1024,
+					UsedBytes:       200*1024*1024 - 9*1024*1024,
 					CapacityBytes:   200 * 1024 * 1024, // delta ~824MiB > 0.5Gi tolerance
 					AvailableInodes: 1000,
 					CapacityInodes:  1000,
+					UsedInodes:      0,
 				}
 
 				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
@@ -283,8 +285,10 @@ var _ = Describe("Periodic Runner", func() {
 				volInfo := &metricssource.VolumeInfo{
 					AvailableBytes:  9 * 1024 * 1024,
 					CapacityBytes:   95 * 1024 * 1024 * 1024, // delta 5Gi > 4% tolerance
+					UsedBytes:       95*1024*1024*1024 - 9*1024*1024,
 					AvailableInodes: 1000,
 					CapacityInodes:  1000,
+					UsedInodes:      0,
 				}
 				volumeRecommendation, err := runner.updateVolumeRecommendationForPVC(nil, pvc, volInfo)
 				Expect(volumeRecommendation).To(Equal(v1alpha1.VolumeRecommendation{}))
@@ -294,8 +298,10 @@ var _ = Describe("Periodic Runner", func() {
 				volInfo = &metricssource.VolumeInfo{
 					AvailableBytes:  9 * 1024 * 1024,
 					CapacityBytes:   98 * 1024 * 1024 * 1024, // delta 2Gi < 4% tolerance
+					UsedBytes:       98*1024*1024*1024 - 9*1024*1024,
 					AvailableInodes: 1000,
 					CapacityInodes:  1000,
+					UsedInodes:      0,
 				}
 				usedSpace, _ := volInfo.UsedSpacePercentage()
 				usedInodes, _ := volInfo.UsedInodesPercentage()
@@ -319,8 +325,10 @@ var _ = Describe("Periodic Runner", func() {
 				volInfo := &metricssource.VolumeInfo{
 					AvailableBytes:  9 * 1024 * 1024,
 					CapacityBytes:   1024 * 1024 * 1024,
+					UsedBytes:       1024*1024*1024 - 9*1024*1024,
 					CapacityInodes:  1000,
 					AvailableInodes: 1000,
+					UsedInodes:      0,
 				}
 				usedSpace, _ := volInfo.UsedSpacePercentage()
 				usedInodes, _ := volInfo.UsedInodesPercentage()

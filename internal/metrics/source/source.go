@@ -27,6 +27,14 @@ const (
 	// KubeletVolumeStatsInodes is a metric which returns the maximum number
 	// of inodes in the volumes
 	KubeletVolumeStatsInodes = "kubelet_volume_stats_inodes"
+
+	// KubeletVolumeStatsUsedBytes is a metric which returns the number of
+	// used bytes in the volumes
+	KubeletVolumeStatsUsedBytes = "kubelet_volume_stats_used_bytes"
+
+	// KubeletVolumeStatsInodesUsed is a metric which returns the number of
+	// used inodes in the volumes
+	KubeletVolumeStatsInodesUsed = "kubelet_volume_stats_inodes_used"
 )
 
 // VolumeInfo provides stats about a persistent volume claim.
@@ -42,6 +50,12 @@ type VolumeInfo struct {
 
 	// CapacityInodes represents the max supported number of inodes in the volume.
 	CapacityInodes int
+
+	// UsedBytes represents the number of used bytes in the volume.
+	UsedBytes int
+
+	// UsedInodes represents the number of used inodes in the volume.
+	UsedInodes int
 }
 
 // ErrCapacityIsZero is an error which is returned when the capacity of
@@ -63,13 +77,13 @@ func (vi *VolumeInfo) FreeSpacePercentage() (int, error) {
 
 // UsedSpacePercentage returns the used space as a percentage.
 func (vi *VolumeInfo) UsedSpacePercentage() (int, error) {
-	free, err := vi.FreeSpacePercentage()
-	if err != nil {
-		return 0, err
+	if vi.CapacityBytes == 0 {
+		return 0, ErrCapacityIsZero
 	}
-	val := 100 - free
 
-	return val, nil
+	val := float64(vi.UsedBytes) / float64(vi.CapacityBytes) * 100.0
+
+	return int(val), nil
 }
 
 // FreeInodesPercentage returns the number of free inodes as a percentage.
@@ -84,13 +98,13 @@ func (vi *VolumeInfo) FreeInodesPercentage() (int, error) {
 
 // UsedInodesPercentage returns the number of used inodes as a percentage.
 func (vi *VolumeInfo) UsedInodesPercentage() (int, error) {
-	free, err := vi.FreeInodesPercentage()
-	if err != nil {
-		return 0, err
+	if vi.CapacityInodes == 0 {
+		return 0, ErrCapacityIsZero
 	}
-	val := 100 - free
 
-	return val, nil
+	val := float64(vi.UsedInodes) / float64(vi.CapacityInodes) * 100.0
+
+	return int(val), nil
 }
 
 // Metrics is a collection of metrics about persistent volume claims grouped by
