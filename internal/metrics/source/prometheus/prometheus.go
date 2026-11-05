@@ -35,6 +35,8 @@ type Prometheus struct {
 	capacityBytesQuery   string
 	availableInodesQuery string
 	capacityInodesQuery  string
+	usedBytesQuery       string
+	usedInodesQuery      string
 }
 
 var _ metricssource.Source = &Prometheus{}
@@ -111,6 +113,26 @@ func WithCapacityInodesQuery(query string) Option {
 	return opt
 }
 
+// WithUsedBytesQuery configures [Prometheus] to use the given query for
+// fetching metrics about used bytes.
+func WithUsedBytesQuery(query string) Option {
+	opt := func(p *Prometheus) {
+		p.usedBytesQuery = query
+	}
+
+	return opt
+}
+
+// WithUsedInodesQuery configures [Prometheus] to use the given query for
+// fetching metrics about used inodes.
+func WithUsedInodesQuery(query string) Option {
+	opt := func(p *Prometheus) {
+		p.usedInodesQuery = query
+	}
+
+	return opt
+}
+
 // New creates a new [Prometheus] metrics source and configures it with the
 // given options.
 func New(opts ...Option) (*Prometheus, error) {
@@ -152,6 +174,12 @@ func New(opts ...Option) (*Prometheus, error) {
 	if p.capacityInodesQuery == "" {
 		p.capacityInodesQuery = metricssource.KubeletVolumeStatsInodes
 	}
+	if p.usedBytesQuery == "" {
+		p.usedBytesQuery = metricssource.KubeletVolumeStatsUsedBytes
+	}
+	if p.usedInodesQuery == "" {
+		p.usedInodesQuery = metricssource.KubeletVolumeStatsInodesUsed
+	}
 
 	return p, nil
 }
@@ -179,6 +207,12 @@ func (p *Prometheus) Get(ctx context.Context) (metricssource.Metrics, error) {
 		},
 		p.capacityInodesQuery: func(val int, info *metricssource.VolumeInfo) {
 			info.CapacityInodes = val
+		},
+		p.usedBytesQuery: func(val int, info *metricssource.VolumeInfo) {
+			info.UsedBytes = val
+		},
+		p.usedInodesQuery: func(val int, info *metricssource.VolumeInfo) {
+			info.UsedInodes = val
 		},
 	}
 

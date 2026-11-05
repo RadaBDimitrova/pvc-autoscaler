@@ -148,6 +148,8 @@ var _ = Describe("Prometheus", func() {
 			capBytesQuery    = "cap-bytes-query"
 			availInodesQuery = "avail-inodes-query"
 			capInodesQuery   = "cap-inodes-query"
+			usedBytesQuery   = "used-bytes-query"
+			usedInodesQuery  = "used-inodes-query"
 		)
 
 		// newSource creates a Prometheus source whose API returns the given
@@ -159,6 +161,8 @@ var _ = Describe("Prometheus", func() {
 				WithCapacityBytesQuery(capBytesQuery),
 				WithAvailableInodesQuery(availInodesQuery),
 				WithCapacityInodesQuery(capInodesQuery),
+				WithUsedBytesQuery(usedBytesQuery),
+				WithUsedInodesQuery(usedInodesQuery),
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
@@ -167,7 +171,7 @@ var _ = Describe("Prometheus", func() {
 			return p
 		}
 
-		It("should retain a PVC when all four series are present", func() {
+		It("should retain a PVC when all series are present", func() {
 			key := types.NamespacedName{Namespace: "foo", Name: "pvc-a"}
 			p := newSource(map[string]model.Vector{
 				// AvailableBytes is a legitimate 0 (full volume) and must be kept.
@@ -175,6 +179,8 @@ var _ = Describe("Prometheus", func() {
 				capBytesQuery:    vector(sample{namespace: "foo", pvc: "pvc-a", value: 100}),
 				availInodesQuery: vector(sample{namespace: "foo", pvc: "pvc-a", value: 10}),
 				capInodesQuery:   vector(sample{namespace: "foo", pvc: "pvc-a", value: 20}),
+				usedBytesQuery:   vector(sample{namespace: "foo", pvc: "pvc-a", value: 100}),
+				usedInodesQuery:  vector(sample{namespace: "foo", pvc: "pvc-a", value: 10}),
 			})
 
 			metrics, err := p.Get(context.Background())
@@ -185,6 +191,8 @@ var _ = Describe("Prometheus", func() {
 				CapacityBytes:   100,
 				AvailableInodes: 10,
 				CapacityInodes:  20,
+				UsedBytes:       100,
+				UsedInodes:      10,
 			}))
 		})
 
@@ -194,6 +202,8 @@ var _ = Describe("Prometheus", func() {
 				capBytesQuery:    vector(sample{namespace: "foo", pvc: "pvc-a", value: 100}),
 				availInodesQuery: vector(sample{namespace: "foo", pvc: "pvc-a", value: 10}),
 				capInodesQuery:   vector(sample{namespace: "foo", pvc: "pvc-a", value: 20}),
+				usedBytesQuery:   vector(sample{namespace: "foo", pvc: "pvc-a", value: 100}),
+				usedInodesQuery:  vector(sample{namespace: "foo", pvc: "pvc-a", value: 10}),
 			})
 
 			metrics, err := p.Get(context.Background())
@@ -220,6 +230,14 @@ var _ = Describe("Prometheus", func() {
 					sample{namespace: "foo", pvc: "pvc-complete", value: 20},
 					sample{namespace: "foo", pvc: "pvc-incomplete", value: 20},
 				),
+				usedBytesQuery: vector(
+					sample{namespace: "foo", pvc: "pvc-complete", value: 50},
+					sample{namespace: "foo", pvc: "pvc-incomplete", value: 50},
+				),
+				usedInodesQuery: vector(
+					sample{namespace: "foo", pvc: "pvc-complete", value: 10},
+					sample{namespace: "foo", pvc: "pvc-incomplete", value: 10},
+				),
 			})
 
 			metrics, err := p.Get(context.Background())
@@ -231,6 +249,8 @@ var _ = Describe("Prometheus", func() {
 				CapacityBytes:   100,
 				AvailableInodes: 10,
 				CapacityInodes:  20,
+				UsedBytes:       50,
+				UsedInodes:      10,
 			}))
 		})
 	})
