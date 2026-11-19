@@ -13,10 +13,10 @@ import (
 )
 
 var _ = Describe("recommendationsConditionAggregator", func() {
-	var aggregator *recommendationsConditionAggregator
+	var aggregator *conditionAggregator
 
 	BeforeEach(func() {
-		aggregator = &recommendationsConditionAggregator{}
+		aggregator = newRecommendationAggregator()
 	})
 
 	It("should return a true condition when no condition aggregated", func() {
@@ -85,7 +85,7 @@ var _ = Describe("resizingConditionAggregator", func() {
 	var aggregator *resizingConditionAggregator
 
 	BeforeEach(func() {
-		aggregator = &resizingConditionAggregator{}
+		aggregator = newResizingAggregator()
 	})
 
 	It("should return a Condition with only Type set when no conditions were added", func() {
