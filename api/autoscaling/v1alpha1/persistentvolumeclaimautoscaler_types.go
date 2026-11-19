@@ -202,8 +202,16 @@ type PersistentVolumeClaimAutoscalerConditionType string
 
 const (
 	// ConditionTypeRecommendationAvailable represents the type of condition
-	// indicating whether metrics have been successfully fetched and computed.
+	// indicating whether recommendations have been successfully computed for all
+	// PersistentVolumeClaims targeted by the PersistentVolumeClaimAutoscaler.
 	ConditionTypeRecommendationAvailable PersistentVolumeClaimAutoscalerConditionType = "RecommendationAvailable"
+	// ConditionTypePVCsMatched represents the type of condition indicating whether
+	// PersistentVolumeClaims could be matched for the
+	// PersistentVolumeClaimAutoscaler.
+	ConditionTypePVCsMatched PersistentVolumeClaimAutoscalerConditionType = "PVCsMatched"
+	// ConditionTypeConfigSupported represents the type of condition indicating
+	// whether the PersistentVolumeClaimAutoscaler configuration is supported.
+	ConditionTypeConfigSupported PersistentVolumeClaimAutoscalerConditionType = "ConfigSupported"
 	// ConditionTypeResizing represents the type of condition indicating the
 	// status of the resize operation.
 	ConditionTypeResizing PersistentVolumeClaimAutoscalerConditionType = "Resizing"
