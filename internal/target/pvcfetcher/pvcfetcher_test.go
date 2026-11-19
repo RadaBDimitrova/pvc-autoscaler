@@ -78,6 +78,7 @@ var _ = Describe("PVCFetcher", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			selectorFetcher.selector = selector
+			selectorFetcher.replicas = 2
 
 			fetcher, err = pvcfetcher.New(
 				pvcfetcher.WithClient(fakeClient),
@@ -114,6 +115,14 @@ var _ = Describe("PVCFetcher", func() {
 			pvcs, err := fetcher.Fetch(ctx, pvca)
 			Expect(err).To(MatchError(pvcfetcher.ErrNoPodsFound))
 			Expect(pvcs).To(BeEmpty())
+		})
+
+		It("should return ErrTargetScaledToZero when no pods match and the target has zero replicas", func() {
+			selectorFetcher.selector, _ = labels.Parse("app=test")
+			selectorFetcher.replicas = 0
+
+			_, err := fetcher.Fetch(ctx, pvca)
+			Expect(err).To(MatchError(pvcfetcher.ErrTargetScaledToZero))
 		})
 
 		It("should return ErrNoPVCsFound when pods have no PVC volumes", func() {
@@ -406,13 +415,14 @@ var _ = Describe("PVCFetcher", func() {
 
 type fakeSelectorFetcher struct {
 	selector labels.Selector
+	replicas int32
 	err      error
 }
 
-func (s *fakeSelectorFetcher) Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, error) {
+func (s *fakeSelectorFetcher) Fetch(ctx context.Context, namespace string, targetRef autoscalingv1.CrossVersionObjectReference) (labels.Selector, int32, error) {
 	if s.err != nil {
-		return nil, s.err
+		return nil, 0, s.err
 	}
 
-	return s.selector, nil
+	return s.selector, s.replicas, nil
 }
